@@ -118,7 +118,7 @@ secureconnect-backend/
 ### 9.3.1. `/cmd` (Application Entry Points)
 Mỗi thư mục trong này là một file thực thi (binary) riêng biệt. Mỗi service (Chat, Video, Auth) sẽ là một process riêng chạy trong Docker container.
 
-*   **Nguyên tắc:** Giữ `main.go` thật đơn giản. Chỉ负责 khởi tạo config, kết nối DB, khởi tạo routes và start server.
+*   **Nguyên tắc:** Giữ `main.go` thật đơn giản. Chỉ khởi tạo config, kết nối DB, khởi tạo routes và start server.
 *   **Ví dụ `cmd/chat-service/main.go`:**
     ```go
     func main() {
