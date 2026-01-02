@@ -251,8 +251,8 @@ Dự án này được cấp phép theo **Private License**. Sử dụng cho m�
 
 ## 📧 Liên hệ (Contact)
 
-*   **System Architect:** [Tên của bạn] - [Email của bạn]
-*   **GitHub:** [@your-username](https://github.com/your-username)
+*   **System Architect:** [Trung Hậu] - [phitruongtrolai@yahoo.com.vn]
+*   **GitHub:** [@biz1990](https://github.com/biz1990)
 
 ---
 
