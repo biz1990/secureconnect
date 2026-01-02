@@ -13,7 +13,7 @@ Tài liệu này cung cấp các cặp code mẫu (Go Struct <-> Dart Class) cho
 
 ---
 
-## 8.2. Bảng映射 Kiểu dữ liệu (Primitive Type Mapping)
+## 8.2. Bảng Kiểu dữ liệu (Primitive Type Mapping)
 
 | Go Type | Dart/Flutter Type | JSON String Representation | Ghi chú |
 | :--- | :--- | :--- | :--- |
