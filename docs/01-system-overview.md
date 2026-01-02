@@ -31,7 +31,7 @@ graph TD
 
     subgraph "Entry Layer"
         LB[Load Balancer / Nginx]
-        GW[API Gateway (Go)]
+        GW[API Gateway Go]
     end
 
     subgraph "Core Services (Microservices - Go)"
