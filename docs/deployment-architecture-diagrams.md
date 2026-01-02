@@ -330,7 +330,7 @@ graph LR
         G3[Gateway: 3 Replicas]
         A3[Auth: 6 Replicas]
         C3[Chat: 8 Replicas]
-        V3[Video Service: 5 Replicas<br/>(CPU Heavy)]
+        V3[Video Service: 5 Replicas<br/>CPU Heavy]
     end
 
     %% Kubernetes HPA (Horizontal Pod Autoscaler) tự động thêm Pods dựa trên CPU/Metric
