@@ -1,0 +1,620 @@
+```yaml
+openapi: 3.0.3
+info:
+  title: SecureConnect SaaS API
+  description: |
+    API Specification cho hệ thống SecureConnect.
+    - Backend: Go (Golang)
+    - Frontend: Flutter
+    - Security: JWT + Hybrid E2EE (Opt-out Encryption)
+  version: 1.0.0
+  contact:
+    name: System Architect
+    email: dev@secureconnect.com
+
+servers:
+  - url: https://api.secureconnect.com/v1
+    description: Production Server
+  - url: https://api-staging.secureconnect.com/v1
+    description: Staging Server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Auth
+    description: Xác thực & ủy quyền
+  - name: Keys
+    description: Quản lý khóa E2EE (Public Keys)
+  - name: Messages
+    description: Quản lý tin nhắn & Cuộc hội thoại
+  - name: Calls
+    description: Quản lý Video/Audio Calls
+  - name: Storage
+    description: Quản lý Ổ đĩa cá nhân & File
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # --- Common Models ---
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: INVALID_PAYLOAD
+            message:
+              type: string
+              example: Email format is invalid
+            details:
+              type: object
+              additionalProperties: true
+          
+    User:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        email:
+          type: string
+          format: email
+          example: "alice@example.com"
+        username:
+          type: string
+          example: "alice_wonder"
+        display_name:
+          type: string
+          example: "Alice"
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        status:
+          type: string
+          enum: [online, offline, busy]
+        created_at:
+          type: string
+          format: date-time
+          example: "2023-10-27T10:00:00Z"
+
+    # --- Auth Models ---
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - full_name
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+          format: password
+          minLength: 8
+        full_name:
+          type: string
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+        - device_id
+      properties:
+        email:
+          type: string
+        password:
+          type: string
+        device_id:
+          type: string
+          description: ID duy nhất của thiết bị để quản lý token
+
+    AuthResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIs..."
+        refresh_token:
+          type: string
+        expires_in:
+          type: integer
+          example: 900
+        user:
+          $ref: '#/components/schemas/User'
+
+    # --- Key Management Models (E2EE) ---
+    UploadKeysRequest:
+      type: object
+      required:
+        - identity_key
+        - signed_pre_key
+        - one_time_pre_keys
+      properties:
+        identity_key:
+          type: string
+          description: Base64 encoded Ed25519 Public Key
+        signed_pre_key:
+          type: object
+          properties:
+            key_id:
+              type: integer
+            public_key:
+              type: string
+            signature:
+              type: string
+        one_time_pre_keys:
+          type: array
+          items:
+            type: object
+            properties:
+              key_id:
+                type: integer
+              public_key:
+                type: string
+
+    UserKeys:
+      type: object
+      properties:
+        identity_key:
+          type: string
+        signed_pre_key:
+          type: object
+          properties:
+            key_id:
+              type: integer
+            public_key:
+              type: string
+            signature:
+              type: string
+        one_time_pre_key:
+          type: object
+          nullable: true
+          description: Một key chưa dùng
+          properties:
+            key_id:
+              type: integer
+            public_key:
+              type: string
+
+    # --- Messaging Models (Hybrid E2EE) ---
+    Message:
+      type: object
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        sender_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+          description: |
+            Nếu is_encrypted=true: Đây là Base64 Encrypted String (Ciphertext).
+            Nếu is_encrypted=false: Đây là Plaintext.
+        is_encrypted:
+          type: boolean
+          description: Cờ quyết định AI có được xử lý hay không
+        content_type:
+          type: string
+          enum: [text, image, video, file]
+        metadata:
+          type: object
+          nullable: true
+          description: |
+            Chứa thông tin file (nếu content_type=file) hoặc Kết quả AI (nếu is_encrypted=false)
+          properties:
+            file_name:
+              type: string
+            file_size:
+              type: integer
+            sentiment:
+              type: string
+              example: "positive"
+        created_at:
+          type: string
+          format: date-time
+
+    SendMessageRequest:
+      type: object
+      required:
+        - conversation_id
+        - content
+        - is_encrypted
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+        is_encrypted:
+          type: boolean
+        content_type:
+          type: string
+          default: text
+        metadata:
+          type: object
+          nullable: true
+
+    Conversation:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [direct, group]
+        name:
+          type: string
+          nullable: true
+        avatar_url:
+          type: string
+          nullable: true
+        is_e2ee_enabled:
+          type: boolean
+          description: Cài đặt bảo mật của cuộc hội thoại
+        unread_count:
+          type: integer
+
+    # --- Call Models ---
+    InitiateCallRequest:
+      type: object
+      required:
+        - call_type
+        - participant_ids
+      properties:
+        call_type:
+          type: string
+          enum: [audio, video]
+        participant_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        is_encrypted:
+          type: boolean
+          description: Nếu false, Server sẽ hỗ trợ Recording/Transcription
+
+    CallInfo:
+      type: object
+      properties:
+        call_id:
+          type: string
+          format: uuid
+        turn_servers:
+          type: array
+          description: Credentials cho WebRTC ICE
+          items:
+            type: object
+            properties:
+              urls:
+                type: string
+                example: "turn:turn.secureconnect.com:3478"
+              username:
+                type: string
+              credential:
+                type: string
+        signaling_url:
+          type: string
+          format: uri
+          description: WebSocket Endpoint cho Signaling
+
+paths:
+  # --- Auth Endpoints ---
+  /auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Đăng ký tài khoản mới
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Đăng ký thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/User'
+        '409':
+          description: Email hoặc Username đã tồn tại
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Đăng nhập
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Đăng nhập thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/AuthResponse'
+
+  # --- Key Management Endpoints ---
+  /keys/upload:
+    post:
+      tags:
+        - Keys
+      summary: Upload Public Keys (Identity, Signed Pre-key, One-time Pre-keys)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadKeysRequest'
+      responses:
+        '200':
+          description: Lưu khóa thành công
+
+  /keys/{user_id}:
+    get:
+      tags:
+        - Keys
+      summary: Lấy Public Keys của một người dùng (Để bắt đầu E2EE)
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: user_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/UserKeys'
+
+  # --- Messaging Endpoints ---
+  /messages:
+    post:
+      tags:
+        - Messages
+      summary: Gửi tin nhắn (Hỗ trợ Hybrid E2EE)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '201':
+          description: Gửi thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      message_id:
+                        type: string
+                        format: uuid
+                      created_at:
+                        type: string
+                        format: date-time
+
+    get:
+      tags:
+        - Messages
+      summary: Lấy lịch sử tin nhắn (Cursor Pagination)
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: conversation_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: cursor
+          schema:
+            type: string
+            description: Base64 encoded timestamp/uuid
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      messages:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Message'
+                      next_cursor:
+                        type: string
+                        nullable: true
+
+  /conversations:
+    get:
+      tags:
+        - Messages
+      summary: Lấy danh sách cuộc hội thoại
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Conversation'
+
+  # --- Calls Endpoints ---
+  /calls/initiate:
+    post:
+      tags:
+        - Calls
+      summary: Khởi tạo cuộc gọi (Video/Audio)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitiateCallRequest'
+      responses:
+        '201':
+          description: Khởi tạo thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/CallInfo'
+
+  /calls/{call_id}/end:
+    post:
+      tags:
+        - Calls
+      summary: Kết thúc cuộc gọi
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: call_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Cuộc gọi đã kết thúc
+
+  # --- Storage Endpoints ---
+  /storage/upload-url:
+    post:
+      tags:
+        - Storage
+      summary: Lấy Pre-signed URL để upload file trực tiếp lên Object Storage (MinIO/S3)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - file_name
+                - file_type
+              properties:
+                file_name:
+                  type: string
+                file_type:
+                  type: string
+                  example: "image/jpeg"
+      responses:
+        '200':
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      upload_url:
+                        type: string
+                        format: uri
+                      file_id:
+                        type: string
+```
+
+### Hướng dẫn sử dụng file này:
+
+1.  **Lưu file:** Lưu nội dung trên thành `api-openapi-spec.yaml`.
+2.  **Import vào Postman:**
+    *   Mở Postman -> Import -> Chọn file YAML.
+    *   Postman sẽ tự động sinh ra toàn bộ collection với các Request và body mẫu.
+3.  **Tạo Client Code (Flutter):**
+    *   Sử dụng công cụ **OpenAPI Generator** hoặc **AutoSpec**.
+    *   Lệnh ví dụ (cần cài Java trước): `openapi-generator-cli generate -i api-openapi-spec.yaml -g dart -o ./flutter_api_client`.
+    *   Nó sẽ tự động sinh ra code Dart cho toàn bộ các Model (`User`, `Message`, `AuthResponse`) và hàm gọi API.
+
+---
+*Liên kết đến tài liệu tiếp theo:* `backend/project-structure.md`
