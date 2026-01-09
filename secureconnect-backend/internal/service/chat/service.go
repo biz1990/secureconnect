@@ -2,31 +2,35 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 	
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	
 	"secureconnect-backend/internal/domain"
 	"secureconnect-backend/internal/repository/cassandra"
-	"secureconnect-backend/internal/repository/redis"
+	redisRepo "secureconnect-backend/internal/repository/redis"
 )
 
 // Service handles chat business logic
 type Service struct {
 	messageRepo   *cassandra.MessageRepository
-	presenceRepo  *redis.PresenceRepository
-	redisClient   interface{} // For pub/sub
+	presenceRepo  *redisRepo.PresenceRepository
+	redisClient   *redis.Client // For Pub/Sub
 }
 
 // NewService creates a new chat service
 func NewService(
 	messageRepo *cassandra.MessageRepository,
-	presenceRepo *redis.PresenceRepository,
+	presenceRepo *redisRepo.PresenceRepository,
+	redisClient *redis.Client,
 ) *Service {
 	return &Service{
 		messageRepo:  messageRepo,
 		presenceRepo: presenceRepo,
+		redisClient:  redisClient,
 	}
 }
 
@@ -65,9 +69,18 @@ func (s *Service) SendMessage(ctx context.Context, input *SendMessageInput) (*Se
 		return nil, fmt.Errorf("failed to save message: %w", err)
 	}
 	
-	// TODO: Publish to Redis Pub/Sub for real-time delivery
-	// channel := fmt.Sprintf("chat:%s", input.ConversationID)
-	// s.redisClient.Publish(ctx, channel, message)
+	// Publish to Redis Pub/Sub for real-time delivery
+	channel := fmt.Sprintf("chat:%s", input.ConversationID)
+	messageJSON, err := json.Marshal(message)
+	if err != nil {
+		// Log error but don't fail the request
+		fmt.Printf("Failed to marshal message for pub/sub: %v\n", err)
+	} else {
+		if err := s.redisClient.Publish(ctx, channel, messageJSON).Err(); err != nil {
+			// Log error but don't fail the request
+			fmt.Printf("Failed to publish message to Redis: %v\n", err)
+		}
+	}
 	
 	// Convert to response
 	response := &domain.MessageResponse{
