@@ -2,22 +2,22 @@ package domain
 
 import (
 	"time"
-	
+
 	"github.com/google/uuid"
 )
 
 // User represents a user entity in the system
 // Maps to CockroachDB users table
 type User struct {
-	UserID      uuid.UUID `json:"user_id" db:"user_id"`
-	Email       string    `json:"email" db:"email"`
-	Username    string    `json:"username" db:"username"`
-	PasswordHash string   `json:"-" db:"password_hash"` // Never expose in JSON
-	DisplayName string    `json:"display_name" db:"display_name"`
-	AvatarURL   *string   `json:"avatar_url,omitempty" db:"avatar_url"`
-	Status      string    `json:"status" db:"status"` // online, offline, busy
-	CreatedAt   time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+	UserID       uuid.UUID `json:"user_id" db:"user_id"`
+	Email        string    `json:"email" db:"email"`
+	Username     string    `json:"username" db:"username"`
+	PasswordHash string    `json:"-" db:"password_hash"` // Never expose in JSON
+	DisplayName  string    `json:"display_name" db:"display_name"`
+	AvatarURL    *string   `json:"avatar_url,omitempty" db:"avatar_url"`
+	Status       string    `json:"status" db:"status"` // online, offline, busy
+	CreatedAt    time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
 
 // UserCreate represents data needed to create a new user

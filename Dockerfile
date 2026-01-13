@@ -1,22 +1,22 @@
 # --- STAGE 1: BUILD ---
 # Sử dụng image Go chuẩn để biên dịch
-FROM golang:1.21-alpine AS builder
+FROM golang:1.23-alpine AS builder
 
 # Cài đặt các công cụ cần thiết (git, cacerts)
-RUN apk add --no-cache git ca-certificates tzdata
+RUN apk add --no-cache git ca-certificates tzdata curl
 
 # Thiết lập thư mục làm việc
 WORKDIR /app
 
 # Copy go.mod và go.sum trước để tận dụng Docker Cache (rất quan trọng để build nhanh lần sau)
-COPY go.mod go.sum ./
+COPY secureconnect-backend/go.mod secureconnect-backend/go.sum ./
 
 # Download các thư viện dependencies
 RUN go mod download
 
 # Copy toàn bộ source code vào container
 # (Sẽ copy các thư mục cmd/, internal/, pkg/, ...)
-COPY . .
+COPY secureconnect-backend/. .
 
 # --- BUILD BINARY ---
 # Chúng ta sử dụng ARG để biết đang build service nào (do docker-compose truyền vào)
@@ -31,6 +31,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /app/${SERVICE_NA
 # Sử dụng image Alpine nhẹ nhất để chạy ứng dụng (image chạy thực tế)
 FROM alpine:latest
 
+# ARG cần được định nghĩa lại ở stage này
+ARG SERVICE_NAME=""
+
 # Cài đặt thư viện liên kết (thiếu thì Go code bị lỗi)
 RUN apk --no-cache add ca-certificates tzdata curl
 
@@ -44,7 +47,7 @@ WORKDIR /app
 COPY --from=builder /app/${SERVICE_NAME} /app/service
 
 # Copy file config (nếu cần)
-COPY configs /app/configs
+COPY secureconnect-backend/configs /app/configs
 
 # Gán quyền sở hữu cho appuser
 RUN chown -R appuser:appgroup /app

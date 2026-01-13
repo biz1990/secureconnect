@@ -2,20 +2,20 @@ package domain
 
 import (
 	"time"
-	
+
 	"github.com/google/uuid"
 )
 
 // Call represents a video/audio call entity
 type Call struct {
-	CallID         uuid.UUID `json:"call_id"`
-	ConversationID uuid.UUID `json:"conversation_id"`
-	CallerID       uuid.UUID `json:"caller_id"`
-	CallType       string    `json:"call_type"` // audio, video
-	Status         string    `json:"status"`    // ringing, active, ended
-	StartedAt      time.Time `json:"started_at"`
+	CallID         uuid.UUID  `json:"call_id"`
+	ConversationID uuid.UUID  `json:"conversation_id"`
+	CallerID       uuid.UUID  `json:"caller_id"`
+	CallType       string     `json:"call_type"` // audio, video
+	Status         string     `json:"status"`    // ringing, active, ended
+	StartedAt      time.Time  `json:"started_at"`
 	EndedAt        *time.Time `json:"ended_at,omitempty"`
-	Duration       int       `json:"duration,omitempty"` // in seconds
+	Duration       int        `json:"duration,omitempty"` // in seconds
 }
 
 // CallParticipant represents a participant in a call

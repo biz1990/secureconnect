@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"time"
-	
+
 	"github.com/gocql/gocql"
 )
 
@@ -30,11 +30,11 @@ func NewCassandraDB(config *CassandraConfig) (*CassandraDB, error) {
 	cluster.Keyspace = config.Keyspace
 	cluster.Consistency = gocql.LocalQuorum // Write to 2/3 nodes for durability
 	cluster.Timeout = config.Timeout
-	
+
 	// Set connection pool
 	cluster.NumConns = 2 // Connections per host
 	cluster.PoolConfig.HostSelectionPolicy = gocql.TokenAwareHostPolicy(gocql.RoundRobinHostPolicy())
-	
+
 	// Authentication if provided
 	if config.Username != "" && config.Password != "" {
 		cluster.Authenticator = gocql.PasswordAuthenticator{
@@ -42,20 +42,20 @@ func NewCassandraDB(config *CassandraConfig) (*CassandraDB, error) {
 			Password: config.Password,
 		}
 	}
-	
+
 	// Retry policy
 	cluster.RetryPolicy = &gocql.ExponentialBackoffRetryPolicy{
 		NumRetries: 3,
 		Min:        time.Second,
 		Max:        10 * time.Second,
 	}
-	
+
 	// Create session
 	session, err := cluster.CreateSession()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cassandra session: %w", err)
 	}
-	
+
 	return &CassandraDB{
 		Session: session,
 		Cluster: cluster,
@@ -85,12 +85,12 @@ func NewCassandraDBFromEnv() (*CassandraDB, error) {
 	if host == "" {
 		host = "localhost"
 	}
-	
+
 	keyspace := os.Getenv("CASSANDRA_KEYSPACE")
 	if keyspace == "" {
 		keyspace = "secureconnect_ks"
 	}
-	
+
 	config := &CassandraConfig{
 		Hosts:    []string{host},
 		Keyspace: keyspace,
@@ -98,6 +98,6 @@ func NewCassandraDBFromEnv() (*CassandraDB, error) {
 		Password: os.Getenv("CASSANDRA_PASSWORD"),
 		Timeout:  10 * time.Second,
 	}
-	
+
 	return NewCassandraDB(config)
 }

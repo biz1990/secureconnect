@@ -3,7 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
-	
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -33,7 +33,7 @@ func (r *DirectoryRepository) SetEmailToUserID(ctx context.Context, email string
 // GetUserIDByEmail retrieves user_id from email
 func (r *DirectoryRepository) GetUserIDByEmail(ctx context.Context, email string) (uuid.UUID, error) {
 	key := fmt.Sprintf("directory:email:%s", email)
-	
+
 	userIDStr, err := r.client.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -41,12 +41,12 @@ func (r *DirectoryRepository) GetUserIDByEmail(ctx context.Context, email string
 		}
 		return uuid.Nil, fmt.Errorf("failed to get user ID: %w", err)
 	}
-	
+
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("invalid user ID format: %w", err)
 	}
-	
+
 	return userID, nil
 }
 
@@ -63,7 +63,7 @@ func (r *DirectoryRepository) SetUsernameToUserID(ctx context.Context, username 
 // GetUserIDByUsername retrieves user_id from username
 func (r *DirectoryRepository) GetUserIDByUsername(ctx context.Context, username string) (uuid.UUID, error) {
 	key := fmt.Sprintf("directory:username:%s", username)
-	
+
 	userIDStr, err := r.client.Get(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
@@ -71,12 +71,12 @@ func (r *DirectoryRepository) GetUserIDByUsername(ctx context.Context, username 
 		}
 		return uuid.Nil, fmt.Errorf("failed to get user ID: %w", err)
 	}
-	
+
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("invalid user ID format: %w", err)
 	}
-	
+
 	return userID, nil
 }
 

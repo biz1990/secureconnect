@@ -1,0 +1,102 @@
+version: '3.8'
+
+# =============================================================================
+# LOGGING STACK - LOKI + PROMTAIL + GRAFANA
+# =============================================================================
+# This stack provides centralized log aggregation and visualization
+#
+# Usage: docker compose -f docker-compose.logging.yml up -d
+# =============================================================================
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  logging-net:
+    driver: bridge
+  secureconnect-net:
+    external: true
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  loki_data:
+  grafana_data:
+  promtail_data:
+
+    # =============================================================================
+    # SERVICES
+    # =============================================================================
+services:
+
+  # --------------------------------------------------------------------------
+  # LOKI - Log Aggregation
+  # --------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:latest
+    container_name: secureconnect_loki
+    ports:
+      - "3100:3100" # HTTP API
+      - "9096:9096" # gRPC
+    volumes:
+      - loki_data:/loki
+      - ./configs/loki-config.yml:/etc/loki/local-config.yaml
+    networks:
+      - logging-net
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: always
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3100/ready" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # PROMTAIL - Log Collector
+  # --------------------------------------------------------------------------
+  promtail:
+    image: grafana/promtail:latest
+    container_name: secureconnect_promtail
+    volumes:
+      - promtail_data:/tmp
+      - ./configs/promtail-config.yml:/etc/promtail/config.yml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - logging-net
+      - secureconnect-net
+    command: -config.file=/etc/promtail/config.yml
+    restart: always
+    depends_on:
+      - loki
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9080/metrics" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # GRAFANA - Visualization
+  # --------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: secureconnect_grafana
+    ports:
+      - "3000:3000" # Web UI
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./configs/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=change-me-in-production
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+    networks:
+      - logging-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3

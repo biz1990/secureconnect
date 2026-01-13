@@ -6,7 +6,7 @@ import (
 	"os"
 	"strconv"
 	"time"
-	
+
 	"github.com/redis/go-redis/v9"
 )
 
@@ -37,15 +37,15 @@ func NewRedisDB(config *RedisConfig) (*RedisDB, error) {
 		WriteTimeout: 3 * time.Second,
 		MaxRetries:   3,
 	})
-	
+
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if err := client.Ping(ctx).Err(); err != nil {
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
 	}
-	
+
 	return &RedisDB{Client: client}, nil
 }
 
@@ -115,7 +115,7 @@ func NewRedisDBFromEnv() (*RedisDB, error) {
 	if host == "" {
 		host = "localhost"
 	}
-	
+
 	portStr := os.Getenv("REDIS_PORT")
 	port := 6379
 	if portStr != "" {
@@ -123,7 +123,7 @@ func NewRedisDBFromEnv() (*RedisDB, error) {
 			port = p
 		}
 	}
-	
+
 	config := &RedisConfig{
 		Host:     host,
 		Port:     port,
@@ -132,6 +132,6 @@ func NewRedisDBFromEnv() (*RedisDB, error) {
 		PoolSize: 10,
 		Timeout:  5 * time.Second,
 	}
-	
+
 	return NewRedisDB(config)
 }

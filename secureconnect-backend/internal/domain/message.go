@@ -2,7 +2,7 @@ package domain
 
 import (
 	"time"
-	
+
 	"github.com/google/uuid"
 )
 
@@ -14,9 +14,9 @@ type Message struct {
 	ConversationID uuid.UUID              `json:"conversation_id" cql:"conversation_id"`
 	Bucket         int                    `json:"-" cql:"bucket"` // YYYYMM format for partitioning
 	SenderID       uuid.UUID              `json:"sender_id" cql:"sender_id"`
-	Content        string                 `json:"content" cql:"content"` // Can be Base64 ciphertext or plaintext
-	IsEncrypted    bool                   `json:"is_encrypted" cql:"is_encrypted"` // CRITICAL FLAG
-	MessageType    string                 `json:"message_type" cql:"message_type"` // text, image, video, file
+	Content        string                 `json:"content" cql:"content"`             // Can be Base64 ciphertext or plaintext
+	IsEncrypted    bool                   `json:"is_encrypted" cql:"is_encrypted"`   // CRITICAL FLAG
+	MessageType    string                 `json:"message_type" cql:"message_type"`   // text, image, video, file
 	Metadata       map[string]interface{} `json:"metadata,omitempty" cql:"metadata"` // AI results or file info
 	CreatedAt      time.Time              `json:"created_at" cql:"created_at"`
 }

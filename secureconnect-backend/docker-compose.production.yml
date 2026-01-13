@@ -1,0 +1,340 @@
+version: '3.8'
+
+# =============================================================================
+# DOCKER SECRETS
+# =============================================================================
+secrets:
+  jwt_secret:
+    external: true
+  db_password:
+    external: true
+  redis_password:
+    external: true
+  minio_access_key:
+    external: true
+  minio_secret_key:
+    external: true
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  secureconnect-net:
+    driver: bridge
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  crdb_data:
+  cassandra_data:
+  redis_data:
+  minio_data:
+  app_logs:
+
+    # =============================================================================
+    # SERVICES
+    # =============================================================================
+services:
+
+  # --------------------------------------------------------------------------
+  # DATABASE: COCKROACHDB (SQL)
+  # --------------------------------------------------------------------------
+  cockroachdb:
+    image: cockroachdb/cockroach:v23.1.0
+    container_name: secureconnect_crdb
+    ports:
+      - "26257:26257" # SQL Port
+      - "8081:8080" # UI Admin
+    command: start-single-node --insecure
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_DB=secureconnect_poc
+      - COCKROACH_MAX_OFFSET_MEMORY=2GB
+    volumes:
+      - crdb_data:/cockroach/cockroach-data
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health?ready=1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # --------------------------------------------------------------------------
+  # DATABASE: CASSANDRA (NoSQL)
+  # --------------------------------------------------------------------------
+  cassandra:
+    image: cassandra:latest
+    container_name: secureconnect_cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=SecConnectCluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_RACK=rack1
+      - MAX_HEAP_SIZE=1024M
+      - HEAP_NEWSIZE=100M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "cqlsh -e 'describe cluster'" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # --------------------------------------------------------------------------
+  # CACHE: REDIS
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: secureconnect_redis
+    ports:
+      - "6379:6379"
+    secrets:
+      - redis_password
+    volumes:
+      - redis_data:/data
+    networks:
+      - secureconnect-net
+    command: >
+      sh -c 'if [ -f /run/secrets/redis_password ]; then
+        redis-server --requirepass $$(cat /run/secrets/redis_password) --appendonly yes --save 900 1;
+      else
+        redis-server --appendonly yes --save 900 1;
+      fi'
+    restart: always
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # STORAGE: MINIO (Object Storage)
+  # --------------------------------------------------------------------------
+  minio:
+    image: minio/minio
+    container_name: secureconnect_minio
+    command: server /data --console-address ":9001"
+    secrets:
+      - minio_access_key
+      - minio_secret_key
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/minio_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/minio_secret_key
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # UI Console
+    volumes:
+      - minio_data:/data
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # API GATEWAY
+  # --------------------------------------------------------------------------
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: api-gateway
+        CMD: ./cmd/api-gateway
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    secrets:
+      - jwt_secret
+      - minio_access_key
+      - minio_secret_key
+    environment:
+      - ENV=production
+      - DB_HOST=cockroachdb
+      - REDIS_HOST=redis
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
+      - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
+      - CASSANDRA_HOST=cassandra
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    volumes:
+      - ./configs:/app/configs
+      - app_logs:/logs
+    depends_on:
+      cockroachdb:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - secureconnect-net
+    mem_limit: 256m
+    cpus: '0.5'
+    restart: on-failure
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # AUTH SERVICE
+  # --------------------------------------------------------------------------
+  auth-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: auth-service
+        CMD: ./cmd/auth-service
+    container_name: auth-service
+    secrets:
+      - jwt_secret
+      - db_password
+    environment:
+      - ENV=production
+      - DB_HOST=cockroachdb
+      - REDIS_HOST=redis
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+      - DB_PASSWORD_FILE=/run/secrets/db_password
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      cockroachdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - secureconnect-net
+    mem_limit: 256m
+    cpus: '0.5'
+    restart: on-failure
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # CHAT SERVICE
+  # --------------------------------------------------------------------------
+  chat-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: chat-service
+        CMD: ./cmd/chat-service
+    container_name: chat-service
+    secrets:
+      - jwt_secret
+      - minio_access_key
+      - minio_secret_key
+    environment:
+      - ENV=production
+      - CASSANDRA_HOST=cassandra
+      - REDIS_HOST=redis
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
+      - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - secureconnect-net
+    mem_limit: 512m
+    cpus: '0.5'
+    restart: on-failure
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8082/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # VIDEO SERVICE (SFU/Pion)
+  # --------------------------------------------------------------------------
+  video-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: video-service
+        CMD: ./cmd/video-service
+    container_name: video-service
+    secrets:
+      - jwt_secret
+    environment:
+      - ENV=production
+      - REDIS_HOST=redis
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - secureconnect-net
+    mem_limit: 512m
+    cpus: '1.0'
+    restart: on-failure
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8083/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # LOAD BALANCER (NGINX)
+  # --------------------------------------------------------------------------
+  gateway:
+    image: nginx:alpine
+    container_name: secureconnect_nginx
+    ports:
+      - "80:80" # HTTP Public
+      - "443:443" # HTTPS Public
+    volumes:
+      - ./configs/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+      chat-service:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+      video-service:
+        condition: service_healthy
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3

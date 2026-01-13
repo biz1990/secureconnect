@@ -1,0 +1,58 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'secureconnect-monitor'
+    environment: 'production'
+
+# Alertmanager configuration (optional)
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+# Rule files (optional)
+rule_files:
+  # - "alerts.yml"
+
+# Scrape configurations
+scrape_configs:
+  # API Gateway
+  - job_name: 'api-gateway'
+    static_configs:
+      - targets: ['api-gateway:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Auth Service
+  - job_name: 'auth-service'
+    static_configs:
+      - targets: ['auth-service:8081']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Chat Service
+  - job_name: 'chat-service'
+    static_configs:
+      - targets: ['chat-service:8082']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Video Service
+  - job_name: 'video-service'
+    static_configs:
+      - targets: ['video-service:8083']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Storage Service
+  - job_name: 'storage-service'
+    static_configs:
+      - targets: ['storage-service:8084']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

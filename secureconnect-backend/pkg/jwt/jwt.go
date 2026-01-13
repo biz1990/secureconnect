@@ -3,7 +3,7 @@ package jwt
 import (
 	"fmt"
 	"time"
-	
+
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
@@ -46,15 +46,16 @@ func (m *JWTManager) GenerateAccessToken(userID uuid.UUID, email, username, role
 			NotBefore: jwt.NewNumericDate(time.Now()),
 			Issuer:    "secureconnect-auth",
 			Subject:   userID.String(),
+			ID:        uuid.New().String(),
 		},
 	}
-	
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(m.secretKey))
 	if err != nil {
 		return "", fmt.Errorf("failed to sign token: %w", err)
 	}
-	
+
 	return tokenString, nil
 }
 
@@ -69,13 +70,13 @@ func (m *JWTManager) GenerateRefreshToken(userID uuid.UUID) (string, error) {
 			Subject:   userID.String(),
 		},
 	}
-	
+
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString([]byte(m.secretKey))
 	if err != nil {
 		return "", fmt.Errorf("failed to sign refresh token: %w", err)
 	}
-	
+
 	return tokenString, nil
 }
 
@@ -88,16 +89,16 @@ func (m *JWTManager) ValidateToken(tokenString string) (*Claims, error) {
 		}
 		return []byte(m.secretKey), nil
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse token: %w", err)
 	}
-	
+
 	claims, ok := token.Claims.(*Claims)
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token")
 	}
-	
+
 	return claims, nil
 }
 
@@ -107,12 +108,12 @@ func (m *JWTManager) ExtractUserID(tokenString string) (uuid.UUID, error) {
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("failed to parse token: %w", err)
 	}
-	
+
 	claims, ok := token.Claims.(*Claims)
 	if !ok {
 		return uuid.Nil, fmt.Errorf("invalid claims")
 	}
-	
+
 	return claims.UserID, nil
 }
 
@@ -122,11 +123,11 @@ func IsTokenExpired(tokenString string) bool {
 	if err != nil {
 		return true
 	}
-	
+
 	claims, ok := token.Claims.(*Claims)
 	if !ok {
 		return true
 	}
-	
+
 	return claims.ExpiresAt.Before(time.Now())
 }

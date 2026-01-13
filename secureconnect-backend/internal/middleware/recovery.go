@@ -2,9 +2,9 @@ package middleware
 
 import (
 	"net/http"
-	
+
 	"github.com/gin-gonic/gin"
-	
+
 	"secureconnect-backend/pkg/response"
 )
 
@@ -15,7 +15,7 @@ func Recovery() gin.HandlerFunc {
 			if err := recover(); err != nil {
 				// Log panic (in production, use proper logging)
 				// log.Printf("[PANIC] %v", err)
-				
+
 				// Return 500 error
 				response.InternalError(c, "Internal server error")
 				c.Abort()

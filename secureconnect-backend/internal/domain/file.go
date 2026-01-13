@@ -2,7 +2,7 @@ package domain
 
 import (
 	"time"
-	
+
 	"github.com/google/uuid"
 )
 
@@ -15,11 +15,13 @@ type File struct {
 	FileName           string                 `json:"file_name" db:"file_name"`
 	FileSize           int64                  `json:"file_size" db:"file_size"` // Bytes
 	ContentType        string                 `json:"content_type" db:"content_type"`
-	MinIOObjectKey     string                 `json:"-" db:"minio_object_key"` // Internal, don't expose
-	IsEncrypted        bool                   `json:"is_encrypted" db:"is_encrypted"` // Client-side encryption
+	MinIOObjectKey     string                 `json:"-" db:"minio_object_key"`                                // Internal, don't expose
+	IsEncrypted        bool                   `json:"is_encrypted" db:"is_encrypted"`                         // Client-side encryption
 	EncryptionMetadata map[string]interface{} `json:"encryption_metadata,omitempty" db:"encryption_metadata"` // Client encryption info
-	Status             string                 `json:"status" db:"status"` // uploading, completed, deleted
+	Status             string                 `json:"status" db:"status"`                                     // uploading, completed, deleted
+	StorageQuotaUsed   int64                  `json:"storage_quota_used" db:"storage_quota_used"`             // Bytes counted against quota
 	CreatedAt          time.Time              `json:"created_at" db:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at" db:"updated_at"`
 	DeletedAt          *time.Time             `json:"deleted_at,omitempty" db:"deleted_at"` // Soft delete
 }
 
@@ -55,9 +57,9 @@ type FileDownloadURLResponse struct {
 
 // UserStorageQuota represents user's storage usage
 type UserStorageQuota struct {
-	UserID       uuid.UUID `json:"user_id"`
-	TotalUsed    int64     `json:"total_used"` // Bytes
-	QuotaLimit   int64     `json:"quota_limit"` // Bytes, based on subscription plan
-	FileCount    int       `json:"file_count"`
-	PercentUsed  float64   `json:"percent_used"`
+	UserID      uuid.UUID `json:"user_id"`
+	TotalUsed   int64     `json:"total_used"`  // Bytes
+	QuotaLimit  int64     `json:"quota_limit"` // Bytes, based on subscription plan
+	FileCount   int       `json:"file_count"`
+	PercentUsed float64   `json:"percent_used"`
 }

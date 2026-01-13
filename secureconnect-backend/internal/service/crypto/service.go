@@ -3,9 +3,9 @@ package crypto
 import (
 	"context"
 	"fmt"
-	
+
 	"github.com/google/uuid"
-	
+
 	"secureconnect-backend/internal/domain"
 	"secureconnect-backend/internal/repository/cockroach"
 )
@@ -37,11 +37,11 @@ func (s *Service) UploadKeys(ctx context.Context, input *UploadKeysInput) error 
 		UserID:           input.UserID,
 		PublicKeyEd25519: input.IdentityKey,
 	}
-	
+
 	if err := s.keysRepo.SaveIdentityKey(ctx, identityKey); err != nil {
 		return fmt.Errorf("failed to save identity key: %w", err)
 	}
-	
+
 	// 2. Save signed pre-key
 	signedPreKey := &domain.SignedPreKey{
 		KeyID:     input.SignedPreKey.KeyID,
@@ -49,11 +49,11 @@ func (s *Service) UploadKeys(ctx context.Context, input *UploadKeysInput) error 
 		PublicKey: input.SignedPreKey.PublicKey,
 		Signature: input.SignedPreKey.Signature,
 	}
-	
+
 	if err := s.keysRepo.SaveSignedPreKey(ctx, signedPreKey); err != nil {
 		return fmt.Errorf("failed to save signed pre-key: %w", err)
 	}
-	
+
 	// 3. Save one-time pre-keys
 	oneTimeKeys := make([]domain.OneTimePreKey, len(input.OneTimePreKeys))
 	for i, key := range input.OneTimePreKeys {
@@ -64,11 +64,11 @@ func (s *Service) UploadKeys(ctx context.Context, input *UploadKeysInput) error 
 			Used:      false,
 		}
 	}
-	
+
 	if err := s.keysRepo.SaveOneTimePreKeys(ctx, input.UserID, oneTimeKeys); err != nil {
 		return fmt.Errorf("failed to save one-time pre-keys: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -86,11 +86,11 @@ func (s *Service) RotateSignedPreKey(ctx context.Context, userID uuid.UUID, newK
 		PublicKey: newKey.PublicKey,
 		Signature: newKey.Signature,
 	}
-	
+
 	if err := s.keysRepo.SaveSignedPreKey(ctx, signedPreKey); err != nil {
 		return fmt.Errorf("failed to rotate signed pre-key: %w", err)
 	}
-	
+
 	// Optionally add new one-time keys
 	if len(newOneTimeKeys) > 0 {
 		oneTimeKeys := make([]domain.OneTimePreKey, len(newOneTimeKeys))
@@ -102,12 +102,12 @@ func (s *Service) RotateSignedPreKey(ctx context.Context, userID uuid.UUID, newK
 				Used:      false,
 			}
 		}
-		
+
 		if err := s.keysRepo.SaveOneTimePreKeys(ctx, userID, oneTimeKeys); err != nil {
 			return fmt.Errorf("failed to save new one-time keys: %w", err)
 		}
 	}
-	
+
 	return nil
 }
 

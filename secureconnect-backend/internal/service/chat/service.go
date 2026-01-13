@@ -5,32 +5,61 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-	
+
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
-	
+	"go.uber.org/zap"
+
 	"secureconnect-backend/internal/domain"
-	"secureconnect-backend/internal/repository/cassandra"
-	redisRepo "secureconnect-backend/internal/repository/redis"
+	"secureconnect-backend/pkg/logger"
 )
+
+// MessageRepository interface
+type MessageRepository interface {
+	Save(message *domain.Message) error
+	GetByConversation(conversationID uuid.UUID, bucket int, limit int, pageState []byte) ([]*domain.Message, []byte, error)
+}
+
+// PresenceRepository interface
+type PresenceRepository interface {
+	SetUserOnline(ctx context.Context, userID uuid.UUID) error
+	SetUserOffline(ctx context.Context, userID uuid.UUID) error
+	RefreshPresence(ctx context.Context, userID uuid.UUID) error
+	IsUserOnline(ctx context.Context, userID uuid.UUID) (bool, error)
+}
+
+// Publisher interface
+type Publisher interface {
+	Publish(ctx context.Context, channel string, message interface{}) error
+}
+
+// RedisAdapter adapts redis.Client to Publisher interface
+type RedisAdapter struct {
+	Client *redis.Client
+}
+
+// Publish publishes message to Redis
+func (a *RedisAdapter) Publish(ctx context.Context, channel string, message interface{}) error {
+	return a.Client.Publish(ctx, channel, message).Err()
+}
 
 // Service handles chat business logic
 type Service struct {
-	messageRepo   *cassandra.MessageRepository
-	presenceRepo  *redisRepo.PresenceRepository
-	redisClient   *redis.Client // For Pub/Sub
+	messageRepo  MessageRepository
+	presenceRepo PresenceRepository
+	publisher    Publisher
 }
 
 // NewService creates a new chat service
 func NewService(
-	messageRepo *cassandra.MessageRepository,
-	presenceRepo *redisRepo.PresenceRepository,
-	redisClient *redis.Client,
+	messageRepo MessageRepository,
+	presenceRepo PresenceRepository,
+	publisher Publisher,
 ) *Service {
 	return &Service{
 		messageRepo:  messageRepo,
 		presenceRepo: presenceRepo,
-		redisClient:  redisClient,
+		publisher:    publisher,
 	}
 }
 
@@ -63,25 +92,31 @@ func (s *Service) SendMessage(ctx context.Context, input *SendMessageInput) (*Se
 		CreatedAt:      time.Now(),
 		Bucket:         domain.CalculateBucket(time.Now()),
 	}
-	
+
 	// Save to Cassandra
 	if err := s.messageRepo.Save(message); err != nil {
 		return nil, fmt.Errorf("failed to save message: %w", err)
 	}
-	
+
 	// Publish to Redis Pub/Sub for real-time delivery
 	channel := fmt.Sprintf("chat:%s", input.ConversationID)
 	messageJSON, err := json.Marshal(message)
 	if err != nil {
 		// Log error but don't fail the request
-		fmt.Printf("Failed to marshal message for pub/sub: %v\n", err)
+		logger.Warn("Failed to marshal message for pub/sub",
+			zap.String("conversation_id", input.ConversationID.String()),
+			zap.String("sender_id", input.SenderID.String()),
+			zap.Error(err))
 	} else {
-		if err := s.redisClient.Publish(ctx, channel, messageJSON).Err(); err != nil {
+		if err := s.publisher.Publish(ctx, channel, messageJSON); err != nil {
 			// Log error but don't fail the request
-			fmt.Printf("Failed to publish message to Redis: %v\n", err)
+			logger.Warn("Failed to publish message to Redis",
+				zap.String("conversation_id", input.ConversationID.String()),
+				zap.String("sender_id", input.SenderID.String()),
+				zap.Error(err))
 		}
 	}
-	
+
 	// Convert to response
 	response := &domain.MessageResponse{
 		MessageID:      message.MessageID,
@@ -93,7 +128,7 @@ func (s *Service) SendMessage(ctx context.Context, input *SendMessageInput) (*Se
 		Metadata:       message.Metadata,
 		CreatedAt:      message.CreatedAt,
 	}
-	
+
 	return &SendMessageOutput{Message: response}, nil
 }
 
@@ -115,7 +150,7 @@ type GetMessagesOutput struct {
 func (s *Service) GetMessages(ctx context.Context, input *GetMessagesInput) (*GetMessagesOutput, error) {
 	// Get current bucket
 	currentBucket := domain.CalculateBucket(time.Now())
-	
+
 	// Fetch messages from Cassandra
 	messages, nextPageState, err := s.messageRepo.GetByConversation(
 		input.ConversationID,
@@ -123,11 +158,11 @@ func (s *Service) GetMessages(ctx context.Context, input *GetMessagesInput) (*Ge
 		input.Limit,
 		input.PageState,
 	)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get messages: %w", err)
 	}
-	
+
 	// Convert to response format
 	responses := make([]*domain.MessageResponse, len(messages))
 	for i, msg := range messages {
@@ -142,7 +177,7 @@ func (s *Service) GetMessages(ctx context.Context, input *GetMessagesInput) (*Ge
 			CreatedAt:      msg.CreatedAt,
 		}
 	}
-	
+
 	return &GetMessagesOutput{
 		Messages:      responses,
 		NextPageState: nextPageState,

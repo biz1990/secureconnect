@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"time"
-	
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	
+
 	"secureconnect-backend/internal/domain"
 )
 
@@ -29,7 +29,7 @@ func (r *CallRepository) Create(ctx context.Context, call *domain.Call) error {
 			call_id, conversation_id, caller_id, call_type, status, started_at
 		) VALUES ($1, $2, $3, $4, $5, $6)
 	`
-	
+
 	_, err := r.pool.Exec(ctx, query,
 		call.CallID,
 		call.ConversationID,
@@ -38,11 +38,11 @@ func (r *CallRepository) Create(ctx context.Context, call *domain.Call) error {
 		call.Status,
 		call.StartedAt,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to create call: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -53,12 +53,12 @@ func (r *CallRepository) UpdateStatus(ctx context.Context, callID uuid.UUID, sta
 		SET status = $2
 		WHERE call_id = $1
 	`
-	
+
 	_, err := r.pool.Exec(ctx, query, callID, status)
 	if err != nil {
 		return fmt.Errorf("failed to update call status: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -71,12 +71,12 @@ func (r *CallRepository) EndCall(ctx context.Context, callID uuid.UUID) error {
 		    duration = EXTRACT(EPOCH FROM (NOW() - started_at))::INT
 		WHERE call_id = $1
 	`
-	
+
 	_, err := r.pool.Exec(ctx, query, callID)
 	if err != nil {
 		return fmt.Errorf("failed to end call: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -88,7 +88,7 @@ func (r *CallRepository) GetByID(ctx context.Context, callID uuid.UUID) (*domain
 		FROM calls
 		WHERE call_id = $1
 	`
-	
+
 	call := &domain.Call{}
 	err := r.pool.QueryRow(ctx, query, callID).Scan(
 		&call.CallID,
@@ -100,14 +100,14 @@ func (r *CallRepository) GetByID(ctx context.Context, callID uuid.UUID) (*domain
 		&call.EndedAt,
 		&call.Duration,
 	)
-	
+
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("call not found")
 		}
 		return nil, fmt.Errorf("failed to get call: %w", err)
 	}
-	
+
 	return call, nil
 }
 
@@ -122,13 +122,13 @@ func (r *CallRepository) GetUserCalls(ctx context.Context, userID uuid.UUID, lim
 		ORDER BY c.started_at DESC
 		LIMIT $2 OFFSET $3
 	`
-	
+
 	rows, err := r.pool.Query(ctx, query, userID, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user calls: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var calls []*domain.Call
 	for rows.Next() {
 		call := &domain.Call{}
@@ -147,7 +147,7 @@ func (r *CallRepository) GetUserCalls(ctx context.Context, userID uuid.UUID, lim
 		}
 		calls = append(calls, call)
 	}
-	
+
 	return calls, nil
 }
 
@@ -157,12 +157,12 @@ func (r *CallRepository) AddParticipant(ctx context.Context, callID, userID uuid
 		INSERT INTO call_participants (call_id, user_id, joined_at, is_muted, is_video_on)
 		VALUES ($1, $2, $3, false, true)
 	`
-	
+
 	_, err := r.pool.Exec(ctx, query, callID, userID, time.Now())
 	if err != nil {
 		return fmt.Errorf("failed to add participant: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -173,12 +173,12 @@ func (r *CallRepository) RemoveParticipant(ctx context.Context, callID, userID u
 		SET left_at = $3
 		WHERE call_id = $1 AND user_id = $2
 	`
-	
+
 	_, err := r.pool.Exec(ctx, query, callID, userID, time.Now())
 	if err != nil {
 		return fmt.Errorf("failed to remove participant: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -190,13 +190,13 @@ func (r *CallRepository) GetParticipants(ctx context.Context, callID uuid.UUID) 
 		WHERE call_id = $1
 		ORDER BY joined_at ASC
 	`
-	
+
 	rows, err := r.pool.Query(ctx, query, callID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get participants: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var participants []*domain.CallParticipant
 	for rows.Next() {
 		p := &domain.CallParticipant{}
@@ -213,7 +213,7 @@ func (r *CallRepository) GetParticipants(ctx context.Context, callID uuid.UUID) 
 		}
 		participants = append(participants, p)
 	}
-	
+
 	return participants, nil
 }
 
@@ -224,11 +224,11 @@ func (r *CallRepository) UpdateParticipantMedia(ctx context.Context, callID, use
 		SET is_muted = $3, is_video_on = $4
 		WHERE call_id = $1 AND user_id = $2
 	`
-	
+
 	_, err := r.pool.Exec(ctx, query, callID, userID, isMuted, isVideoOn)
 	if err != nil {
 		return fmt.Errorf("failed to update participant media: %w", err)
 	}
-	
+
 	return nil
 }

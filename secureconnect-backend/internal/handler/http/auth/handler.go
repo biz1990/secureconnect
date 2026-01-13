@@ -2,10 +2,12 @@ package auth
 
 import (
 	"net/http"
-	
+	"strings"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	
+
 	"secureconnect-backend/internal/service/auth"
 	"secureconnect-backend/pkg/response"
 )
@@ -49,7 +51,7 @@ func (h *Handler) Register(c *gin.Context) {
 		response.ValidationError(c, err.Error())
 		return
 	}
-	
+
 	// Call service
 	output, err := h.authService.Register(c.Request.Context(), &auth.RegisterInput{
 		Email:       req.Email,
@@ -57,21 +59,33 @@ func (h *Handler) Register(c *gin.Context) {
 		Password:    req.Password,
 		DisplayName: req.DisplayName,
 	})
-	
+
 	if err != nil {
 		// Check for specific errors
-		if err.Error() == "email already registered" || err.Error() == "username already taken" {
-			response.Conflict(c, err.Error())
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "email already registered") || strings.Contains(errMsg, "username already taken") {
+			response.Conflict(c, errMsg)
 			return
 		}
-		if err.Error() == "validation failed" {
-			response.ValidationError(c, err.Error())
+		if strings.Contains(errMsg, "validation failed") {
+			response.ValidationError(c, errMsg)
 			return
 		}
-		response.InternalError(c, "Failed to register user")
+		// Log the actual error for debugging
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error": gin.H{
+				"code":    "INTERNAL_ERROR",
+				"message": "Failed to register user",
+				"details": errMsg,
+			},
+			"meta": gin.H{
+				"timestamp": time.Now().UTC(),
+			},
+		})
 		return
 	}
-	
+
 	// Return response
 	response.Success(c, http.StatusCreated, gin.H{
 		"user":          output.User,
@@ -88,13 +102,13 @@ func (h *Handler) Login(c *gin.Context) {
 		response.ValidationError(c, err.Error())
 		return
 	}
-	
+
 	// Call service
 	output, err := h.authService.Login(c.Request.Context(), &auth.LoginInput{
 		Email:    req.Email,
 		Password: req.Password,
 	})
-	
+
 	if err != nil {
 		if err.Error() == "invalid credentials" {
 			response.Unauthorized(c, "Invalid email or password")
@@ -103,7 +117,7 @@ func (h *Handler) Login(c *gin.Context) {
 		response.InternalError(c, "Failed to login")
 		return
 	}
-	
+
 	// Return response
 	response.Success(c, http.StatusOK, gin.H{
 		"user":          output.User,
@@ -120,17 +134,17 @@ func (h *Handler) RefreshToken(c *gin.Context) {
 		response.ValidationError(c, err.Error())
 		return
 	}
-	
+
 	// Call service
 	output, err := h.authService.RefreshToken(c.Request.Context(), &auth.RefreshTokenInput{
 		RefreshToken: req.RefreshToken,
 	})
-	
+
 	if err != nil {
 		response.Unauthorized(c, "Invalid or expired refresh token")
 		return
 	}
-	
+
 	// Return response
 	response.Success(c, http.StatusOK, gin.H{
 		"access_token":  output.AccessToken,
@@ -147,13 +161,13 @@ func (h *Handler) Logout(c *gin.Context) {
 		response.Unauthorized(c, "Not authenticated")
 		return
 	}
-	
+
 	userID, ok := userIDVal.(uuid.UUID)
 	if !ok {
 		response.InternalError(c, "Invalid user ID")
 		return
 	}
-	
+
 	// Get session ID from request (could be from header or body)
 	sessionID := c.GetHeader("X-Session-ID")
 	if sessionID == "" {
@@ -164,13 +178,21 @@ func (h *Handler) Logout(c *gin.Context) {
 		c.ShouldBindJSON(&req)
 		sessionID = req.SessionID
 	}
-	
+
+	// Extract token string for blacklisting
+	authHeader := c.GetHeader("Authorization")
+	parts := strings.Split(authHeader, " ")
+	tokenString := ""
+	if len(parts) == 2 && parts[0] == "Bearer" {
+		tokenString = parts[1]
+	}
+
 	// Call service
-	if err := h.authService.Logout(c.Request.Context(), sessionID, userID); err != nil {
+	if err := h.authService.Logout(c.Request.Context(), sessionID, userID, tokenString); err != nil {
 		response.InternalError(c, "Failed to logout")
 		return
 	}
-	
+
 	response.Success(c, http.StatusOK, gin.H{
 		"message": "Logged out successfully",
 	})
@@ -185,7 +207,7 @@ func (h *Handler) GetProfile(c *gin.Context) {
 		response.Unauthorized(c, "Not authenticated")
 		return
 	}
-	
+
 	// Return user info from token claims
 	response.Success(c, http.StatusOK, gin.H{
 		"user_id":  userIDVal,

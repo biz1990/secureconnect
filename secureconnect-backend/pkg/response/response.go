@@ -2,17 +2,17 @@ package response
 
 import (
 	"time"
-	
+
 	"github.com/gin-gonic/gin"
 )
 
 // Response represents standard API response envelope
 // Per spec: docs/05-api-design.md
 type Response struct {
-	Success bool        `json:"success"`
-	Data    interface{} `json:"data,omitempty"`
+	Success bool         `json:"success"`
+	Data    interface{}  `json:"data,omitempty"`
 	Error   *ErrorDetail `json:"error,omitempty"`
-	Meta    Meta        `json:"meta"`
+	Meta    Meta         `json:"meta"`
 }
 
 // ErrorDetail contains error information
