@@ -95,10 +95,11 @@ CREATE TABLE contacts (
 CREATE TABLE conversations (
     conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     type STRING NOT NULL, -- direct, group
-    name STRING, -- For group chats
+    title STRING, -- For group chats
     avatar_url STRING,
     created_by UUID REFERENCES users(user_id),
     created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
     INDEX idx_conversations_created (created_at DESC)
 );
 
@@ -219,7 +220,7 @@ INSERT INTO users (user_id, email, username, password_hash, display_name, status
     ('00000000-0000-0000-0000-000000000002', 'test@example.com', 'testuser', '$2a$12$LQv3c1yqBWVHxkQB', 'Test User', 'offline');
 
 -- Sample conversation
-INSERT INTO conversations (conversation_id, type, name, created_by) VALUES
+INSERT INTO conversations (conversation_id, type, title, created_by) VALUES
     ('00000000-0000-0000-0000-000000000101', 'direct', NULL, '00000000-0000-0000-0000-000000000001');
 
 -- Sample conversation settings

@@ -112,7 +112,7 @@ func (h *Handler) GetConversations(c *gin.Context) {
 	// Get conversations
 	conversations, err := h.conversationService.GetUserConversations(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		response.InternalError(c, "Failed to get conversations")
+		response.InternalError(c, "Failed to get conversations: "+err.Error())
 		return
 	}
 

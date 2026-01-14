@@ -76,7 +76,29 @@ var signalingUpgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins in dev
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// Reject empty origins - require explicit origin for security
+			return false
+		}
+
+		// Check if origin is in allowed list
+		allowedOrigins := map[string]bool{
+			"http://localhost:3000":  true,
+			"http://localhost:8080":  true,
+			"http://127.0.0.1:3000":  true,
+			"http://127.0.0.1:8080":  true,
+			"https://localhost:3000": true,
+			"https://localhost:8080": true,
+			// Add production domains here
+			"https://api.secureconnect.com": true,
+		}
+		for allowed := range allowedOrigins {
+			if origin == allowed {
+				return true
+			}
+		}
+		return false
 	},
 }
 

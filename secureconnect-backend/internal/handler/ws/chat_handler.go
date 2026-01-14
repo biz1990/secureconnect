@@ -88,8 +88,8 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 		if origin == "" {
-			// Allow non-browser clients (e.g., mobile apps, CLI tools)
-			return true
+			// Reject empty origins - require explicit origin for security
+			return false
 		}
 
 		// Check if origin is in allowed list

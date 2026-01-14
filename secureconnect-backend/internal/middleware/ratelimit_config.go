@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -107,7 +108,7 @@ func (m *RateLimitConfigManager) GetConfigForPath(path string) RateLimitConfig {
 // isPathMatch checks if a path matches a pattern (e.g., /v1/users/:id matches /v1/users/123)
 func isPathMatch(path, pattern string) bool {
 	// Simple pattern matching - in production, you might want to use a more sophisticated approach
-	// For now, just check if path starts with the pattern's base path
+	// For now, just check if path starts with pattern's base path
 	pathParts := splitPath(path)
 	patternParts := splitPath(pattern)
 
@@ -215,13 +216,61 @@ func (rl *AdvancedRateLimiter) Middleware() gin.HandlerFunc {
 	}
 }
 
-// checkRateLimit checks if the request is within rate limits
-func (rl *AdvancedRateLimiter) checkRateLimit(_ *gin.Context, _ string, requests int, _ time.Duration) (bool, int, int64, error) {
-	// This would be implemented using Redis with sliding window or token bucket algorithm
-	// For now, return a simple implementation
-	// In production, you should implement a proper sliding window or token bucket algorithm
+// checkRateLimit checks if request is within rate limits using Redis sliding window
+func (rl *AdvancedRateLimiter) checkRateLimit(c *gin.Context, identifier string, requests int, window time.Duration) (bool, int, int64, error) {
+	ctx := c.Request.Context()
+	now := time.Now().Unix()
+	windowStart := now - int64(window.Seconds())
 
-	// For now, just return allowed (would need proper Redis implementation)
-	// TODO: Implement proper sliding window rate limiting with Redis
-	return true, requests - 1, 0, nil
+	// Redis key for rate limiting
+	key := fmt.Sprintf("ratelimit:%s", identifier)
+	windowKey := fmt.Sprintf("ratelimit:%s:window", identifier)
+
+	// Use Redis pipeline for atomic operations
+	pipe := rl.redisClient.Pipeline()
+
+	// Get current window start
+	pipe.Get(ctx, windowKey)
+
+	// Increment request count
+	pipe.Incr(ctx, key)
+
+	// Set expiration on key
+	pipe.Expire(ctx, key, window)
+
+	// Execute pipeline
+	results, err := pipe.Exec(ctx)
+	if err != nil {
+		return false, 0, 0, fmt.Errorf("failed to execute Redis pipeline: %w", err)
+	}
+
+	// Parse results
+	lastWindowStartBytes := results[0].(*redis.StringCmd).Val()
+	count, err := results[1].(*redis.IntCmd).Result()
+	if err != nil && err != redis.Nil {
+		return false, 0, 0, fmt.Errorf("failed to get request count: %w", err)
+	}
+
+	// Check if we need to reset window
+	lastWindowStart, _ := strconv.ParseInt(lastWindowStartBytes, 10, 64)
+	if lastWindowStart < windowStart || err != nil {
+		// New window, reset count
+		if err := rl.redisClient.Set(ctx, windowKey, windowStart, window).Err(); err != nil {
+			return false, 0, 0, fmt.Errorf("failed to set window start: %w", err)
+		}
+		if err := rl.redisClient.Set(ctx, key, 1, window).Err(); err != nil {
+			return false, 0, 0, fmt.Errorf("failed to reset request count: %w", err)
+		}
+		count = int64(1)
+	}
+
+	remaining := requests - int(count)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	allowed := int(count) <= requests
+	resetTime := lastWindowStart + int64(window.Seconds())
+
+	return allowed, remaining, resetTime, nil
 }

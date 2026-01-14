@@ -13,11 +13,13 @@ import (
 	"github.com/gin-gonic/gin"
 
 	authHandler "secureconnect-backend/internal/handler/http/auth"
+	"secureconnect-backend/internal/handler/http/conversation"
 	userHandler "secureconnect-backend/internal/handler/http/user"
 	"secureconnect-backend/internal/middleware"
 	"secureconnect-backend/internal/repository/cockroach"
 	"secureconnect-backend/internal/repository/redis"
 	authService "secureconnect-backend/internal/service/auth"
+	conversationService "secureconnect-backend/internal/service/conversation"
 	userService "secureconnect-backend/internal/service/user"
 	"secureconnect-backend/pkg/config"
 	"secureconnect-backend/pkg/constants"
@@ -89,6 +91,7 @@ func main() {
 	userRepo := cockroach.NewUserRepository(cockroachDB.Pool)
 	blockedUserRepo := cockroach.NewBlockedUserRepository(cockroachDB.Pool)
 	emailVerificationRepo := cockroach.NewEmailVerificationRepository(cockroachDB.Pool)
+	conversationRepo := cockroach.NewConversationRepository(cockroachDB.Pool)
 	directoryRepo := redis.NewDirectoryRepository(redisDB.Client)
 	sessionRepo := redis.NewSessionRepository(redisDB.Client)
 	presenceRepo := redis.NewPresenceRepository(redisDB.Client)
@@ -101,10 +104,12 @@ func main() {
 	emailSvc := email.NewService(&email.MockSender{})
 
 	userSvc := userService.NewService(userRepo, blockedUserRepo, emailVerificationRepo, emailSvc)
+	conversationSvc := conversationService.NewService(conversationRepo, userRepo)
 
 	// 6. Initialize Handlers
 	authHdlr := authHandler.NewHandler(authSvc)
 	userHdlr := userHandler.NewHandler(userSvc)
+	conversationHdlr := conversation.NewHandler(conversationSvc)
 
 	// 7. Setup Gin Router
 	router := gin.Default()
@@ -164,6 +169,21 @@ func main() {
 			users.POST("/me/friends/:id/accept", userHdlr.AcceptFriendRequest)
 			users.DELETE("/me/friends/:id/reject", userHdlr.RejectFriendRequest)
 			users.DELETE("/me/friends/:id", userHdlr.Unfriend)
+		}
+
+		// Conversation Management routes (all require authentication)
+		conversations := v1.Group("/conversations")
+		conversations.Use(middleware.AuthMiddleware(jwtManager, authSvc))
+		{
+			conversations.POST("", conversationHdlr.CreateConversation)
+			conversations.GET("", conversationHdlr.GetConversations)
+			conversations.GET("/:id", conversationHdlr.GetConversation)
+			conversations.PATCH("/:id", conversationHdlr.UpdateConversation)
+			conversations.DELETE("/:id", conversationHdlr.DeleteConversation)
+			conversations.PUT("/:id/settings", conversationHdlr.UpdateSettings)
+			conversations.POST("/:id/participants", conversationHdlr.AddParticipants)
+			conversations.GET("/:id/participants", conversationHdlr.GetParticipants)
+			conversations.DELETE("/:id/participants/:userId", conversationHdlr.RemoveParticipant)
 		}
 	}
 

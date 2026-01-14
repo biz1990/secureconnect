@@ -1,62 +1,63 @@
 # --- STAGE 1: BUILD ---
-# Sử dụng image Go chuẩn để biên dịch
-FROM golang:1.23-alpine AS builder
+# Use Go standard image for compilation
+FROM golang:1.24-alpine AS builder
 
-# Cài đặt các công cụ cần thiết (git, cacerts)
+# Install required tools (git, cacerts)
 RUN apk add --no-cache git ca-certificates tzdata curl
 
-# Thiết lập thư mục làm việc
+# Set working directory
 WORKDIR /app
 
-# Copy go.mod và go.sum trước để tận dụng Docker Cache (rất quan trọng để build nhanh lần sau)
+# Copy go.mod and go.sum first to utilize Docker Cache (very important for fast subsequent builds)
 COPY secureconnect-backend/go.mod secureconnect-backend/go.sum ./
 
-# Download các thư viện dependencies
+# Download library dependencies
 RUN go mod download
 
-# Copy toàn bộ source code vào container
-# (Sẽ copy các thư mục cmd/, internal/, pkg/, ...)
+# Copy all source code into container
+# (Will copy cmd/, internal/, pkg/, directories)
 COPY secureconnect-backend/. .
 
 # --- BUILD BINARY ---
-# Chúng ta sử dụng ARG để biết đang build service nào (do docker-compose truyền vào)
+# Use ARG to know which service to build (passed by docker-compose)
 ARG SERVICE_NAME=""
 ARG CMD=""
 
-# Biên dịch code Go thành file binary tĩnh (static)
-# Binary được đặt tên là $SERVICE_NAME (ví dụ: api-gateway)
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /app/${SERVICE_NAME} /app/${CMD}
+# Build Go code into static binary file
+# All binaries are named "service" for consistency
+# Build from the cmd directory where main.go is located
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o /app/service ./cmd/${SERVICE_NAME}
 
 # --- STAGE 2: RUN ---
-# Sử dụng image Alpine nhẹ nhất để chạy ứng dụng (image chạy thực tế)
+# Use Alpine lightweight image to run the application (actual runtime image)
 FROM alpine:latest
 
-# ARG cần được định nghĩa lại ở stage này
-ARG SERVICE_NAME=""
-
-# Cài đặt thư viện liên kết (thiếu thì Go code bị lỗi)
+# Install link libraries (missing causes Go code errors)
 RUN apk --no-cache add ca-certificates tzdata curl
 
-# Tạo user không root để tăng bảo mật
+# Create non-root user to increase security
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-# Copy file binary từ Stage Builder sang Stage Runner
-# Binary này nằm ở /app/${SERVICE_NAME}
-COPY --from=builder /app/${SERVICE_NAME} /app/service
+# Copy binary file from Stage Builder to Stage Runner
+# All binaries are named "service"
+COPY --from=builder /app/service /app/service
 
-# Copy file config (nếu cần)
+# Copy config files (if needed)
 COPY secureconnect-backend/configs /app/configs
 
-# Gán quyền sở hữu cho appuser
+# Copy Swagger API documentation files
+COPY secureconnect-backend/api /app/api
+
+# Assign ownership to appuser
 RUN chown -R appuser:appgroup /app
 
-# Chuyển sang user appuser (không chạy bằng root)
+# Switch to appuser (don't run as root)
 USER appuser
 
 # Expose port 8080
 EXPOSE 8080
 
-# Lệnh chạy mặc định là chạy file binary tên là 'service'
+# Run the binary
 CMD ["./service"]

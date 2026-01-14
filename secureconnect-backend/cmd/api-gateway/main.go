@@ -72,6 +72,11 @@ func main() {
 		})
 	})
 
+	// 7. Swagger documentation
+	router.GET("/swagger", func(c *gin.Context) {
+		c.File("./api/swagger/openapi.yaml")
+	})
+
 	// 7. API version 1 routes
 	v1 := router.Group("/v1")
 	{
@@ -116,6 +121,21 @@ func main() {
 			usersGroup.DELETE("/me/friends/:id", proxyToService("auth-service", 8080))
 		}
 
+		// Conversation Management routes - all require authentication
+		conversationsGroup := v1.Group("/conversations")
+		conversationsGroup.Use(middleware.AuthMiddleware(jwtManager, revocationChecker))
+		{
+			conversationsGroup.POST("", proxyToService("auth-service", 8080))
+			conversationsGroup.GET("", proxyToService("auth-service", 8080))
+			conversationsGroup.GET("/:id", proxyToService("auth-service", 8080))
+			conversationsGroup.PATCH("/:id", proxyToService("auth-service", 8080))
+			conversationsGroup.DELETE("/:id", proxyToService("auth-service", 8080))
+			conversationsGroup.PUT("/:id/settings", proxyToService("auth-service", 8080))
+			conversationsGroup.POST("/:id/participants", proxyToService("auth-service", 8080))
+			conversationsGroup.GET("/:id/participants", proxyToService("auth-service", 8080))
+			conversationsGroup.DELETE("/:id/participants/:userId", proxyToService("auth-service", 8080))
+		}
+
 		// Keys Service routes (E2EE) - all require authentication
 		keysGroup := v1.Group("/keys")
 		keysGroup.Use(middleware.AuthMiddleware(jwtManager, revocationChecker))
@@ -131,6 +151,13 @@ func main() {
 		{
 			chatGroup.POST("", proxyToService("chat-service", 8082))
 			chatGroup.GET("", proxyToService("chat-service", 8082))
+		}
+
+		// Presence endpoint - require authentication
+		presenceGroup := v1.Group("/presence")
+		presenceGroup.Use(middleware.AuthMiddleware(jwtManager, revocationChecker))
+		{
+			presenceGroup.POST("", proxyToService("chat-service", 8082))
 		}
 
 		// WebSocket chat - will be handled by chat service directly
@@ -167,6 +194,7 @@ func main() {
 	log.Println("📍 Routes:")
 	log.Println("   - Auth: /v1/auth/*")
 	log.Println("   - Users: /v1/users/*")
+	log.Println("   - Conversations: /v1/conversations/*")
 	log.Println("   - Keys: /v1/keys/*")
 	log.Println("   - Chat: /v1/messages, /v1/ws/chat")
 	log.Println("   - Calls: /v1/calls/*, /v1/ws/signaling")
@@ -219,9 +247,10 @@ func proxyToService(serviceName string, port int) gin.HandlerFunc {
 
 // getServiceHost returns service hostname (Docker DNS or localhost)
 func getServiceHost(serviceName string) string {
-	// In Docker environment, use service name as hostname
-	// In local dev, use localhost
-	if os.Getenv("ENV") == "production" {
+	// In Docker environment (production, local, staging), use service name as hostname
+	// Only use localhost for direct local development outside Docker
+	env := os.Getenv("ENV")
+	if env == "production" || env == "local" || env == "staging" {
 		return serviceName
 	}
 	return "localhost"
