@@ -54,6 +54,25 @@ func main() {
 	// 4. Setup Gin router
 	router := gin.New() // Don't use Default() to have full control
 
+	// Configure trusted proxies for production
+	trustedProxies := []string{}
+	if env := os.Getenv("ENV"); env == "production" {
+		// Production: Only trust specific domains
+		trustedProxies = []string{
+			"https://api.secureconnect.com",
+			"https://*.secureconnect.com",
+		}
+	} else {
+		// Development: Allow localhost and private IPs
+		trustedProxies = []string{
+			"http://localhost:3000",
+			"http://localhost:8080",
+			"http://127.0.0.1:3000",
+			"http://127.0.0.1:8080",
+		}
+	}
+	router.SetTrustedProxies(trustedProxies)
+
 	// 5. Apply global middleware
 	router.Use(middleware.Recovery())
 	router.Use(middleware.RequestLogger())
@@ -231,13 +250,11 @@ func proxyToService(serviceName string, port int) gin.HandlerFunc {
 			req.URL.RawQuery = c.Request.URL.RawQuery
 		}
 
-		// Handle errors
+		// Handle errors - write directly to response writer
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("Proxy error for %s: %v", serviceName, err)
-			c.JSON(http.StatusBadGateway, gin.H{
-				"error":   "Service unavailable",
-				"service": serviceName,
-			})
+			w.WriteHeader(http.StatusBadGateway)
+			w.Write([]byte(`{"error":"Service unavailable","service":"` + serviceName + `"}`))
 		}
 
 		// Serve

@@ -83,7 +83,30 @@ func main() {
 	chatHub := wsHandler.NewChatHub(redisDB.Client)
 
 	// 8. Setup Gin Router
-	router := gin.Default()
+	router := gin.New() // Don't use Default() to have full control
+
+	// Configure trusted proxies for production
+	trustedProxies := []string{}
+	if env := os.Getenv("ENV"); env == "production" {
+		// Production: Only trust specific domains
+		trustedProxies = []string{
+			"https://api.secureconnect.com",
+			"https://*.secureconnect.com",
+		}
+	} else {
+		// Development: Allow localhost and private IPs
+		trustedProxies = []string{
+			"http://localhost:3000",
+			"http://localhost:8080",
+			"http://127.0.0.1:3000",
+			"http://127.0.0.1:8080",
+		}
+	}
+	router.SetTrustedProxies(trustedProxies)
+
+	// Apply global middleware
+	router.Use(middleware.Recovery())
+	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
 
 	// Health check

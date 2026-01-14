@@ -16,9 +16,11 @@ func Recovery() gin.HandlerFunc {
 				// Log panic (in production, use proper logging)
 				// log.Printf("[PANIC] %v", err)
 
-				// Return 500 error
-				response.InternalError(c, "Internal server error")
-				c.Abort()
+				// Only send error response if headers haven't been written yet
+				if !c.Writer.Written() {
+					response.InternalError(c, "Internal server error")
+					c.Abort()
+				}
 			}
 		}()
 		c.Next()

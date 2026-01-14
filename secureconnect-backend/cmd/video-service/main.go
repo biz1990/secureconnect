@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -84,8 +85,16 @@ func main() {
 
 	// 4. Initialize Push Service
 	pushTokenRepo := redisRepo.NewPushTokenRepository(redisClient)
-	pushProvider := &push.MockProvider{} // Use mock for development
+
+	// Use MockProvider for now - in production, implement real FCM/APNs providers
+	pushProvider := &push.MockProvider{}
 	pushSvc := push.NewService(pushProvider, pushTokenRepo)
+
+	// Log warning about mock provider in production
+	if env := os.Getenv("ENV"); env == "production" {
+		log.Println("⚠️  WARNING: Using MockProvider for push notifications in production mode!")
+		log.Println("⚠️  Please implement real FCM/APNs providers before production deployment")
+	}
 
 	// 5. Initialize Video Service
 	videoSvc := videoService.NewService(callRepo, conversationRepo, userRepo, pushSvc)
@@ -97,7 +106,30 @@ func main() {
 	signalingHub := wsHandler.NewSignalingHub(redisClient)
 
 	// 8. Setup Gin Router
-	router := gin.Default()
+	router := gin.New() // Don't use Default() to have full control
+
+	// Configure trusted proxies for production
+	trustedProxies := []string{}
+	if env := os.Getenv("ENV"); env == "production" {
+		// Production: Only trust specific domains
+		trustedProxies = []string{
+			"https://api.secureconnect.com",
+			"https://*.secureconnect.com",
+		}
+	} else {
+		// Development: Allow localhost and private IPs
+		trustedProxies = []string{
+			"http://localhost:3000",
+			"http://localhost:8080",
+			"http://127.0.0.1:3000",
+			"http://127.0.0.1:8080",
+		}
+	}
+	router.SetTrustedProxies(trustedProxies)
+
+	// Apply global middleware
+	router.Use(middleware.Recovery())
+	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
 
 	// Health check

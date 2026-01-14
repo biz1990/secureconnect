@@ -14,6 +14,7 @@ import (
 	"secureconnect-backend/internal/repository/cockroach"
 	"secureconnect-backend/pkg/constants"
 	"secureconnect-backend/pkg/email"
+	"secureconnect-backend/pkg/env"
 )
 
 // Service handles user business logic
@@ -161,7 +162,7 @@ func (s *Service) InitiateEmailChange(ctx context.Context, userID uuid.UUID, new
 		Username: userInfo.Username,
 		Token:    token,
 		NewEmail: newEmail,
-		AppURL:   "", // TODO: Get from config
+		AppURL:   env.GetString("APP_URL", "http://localhost:9090"),
 	})
 	if err != nil {
 		// Log error but don't fail - token is still created
