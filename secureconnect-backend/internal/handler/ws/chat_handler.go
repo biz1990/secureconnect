@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,6 +81,15 @@ func GetAllowedOrigins() map[string]bool {
 		"http://127.0.0.1:3000": true,
 		"http://127.0.0.1:8080": true,
 	}
+
+	// Add production origins from environment if set
+	if origins := os.Getenv("CORS_ALLOWED_ORIGINS"); origins != "" {
+		// Parse comma-separated origins
+		for _, origin := range strings.Split(origins, ",") {
+			allowedOrigins[strings.TrimSpace(origin)] = true
+		}
+	}
+
 	return allowedOrigins
 }
 

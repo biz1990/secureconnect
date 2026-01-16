@@ -14,6 +14,7 @@ type Claims struct {
 	Email    string    `json:"email"`
 	Username string    `json:"username"`
 	Role     string    `json:"role"` // user, admin
+	Audience string    `json:"aud"`  // Audience claim for token validation
 	jwt.RegisteredClaims
 }
 
@@ -40,6 +41,7 @@ func (m *JWTManager) GenerateAccessToken(userID uuid.UUID, email, username, role
 		Email:    email,
 		Username: username,
 		Role:     role,
+		Audience: "secureconnect-api", // Canonical audience for API
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(m.accessTokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -62,7 +64,8 @@ func (m *JWTManager) GenerateAccessToken(userID uuid.UUID, email, username, role
 // GenerateRefreshToken creates a new refresh token (long-lived: 30 days)
 func (m *JWTManager) GenerateRefreshToken(userID uuid.UUID) (string, error) {
 	claims := &Claims{
-		UserID: userID,
+		UserID:   userID,
+		Audience: "secureconnect-api", // Canonical audience for API
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(m.refreshTokenDuration)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

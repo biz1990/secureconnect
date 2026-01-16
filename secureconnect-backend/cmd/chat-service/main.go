@@ -16,11 +16,14 @@ import (
 	wsHandler "secureconnect-backend/internal/handler/ws"
 	"secureconnect-backend/internal/middleware"
 	"secureconnect-backend/internal/repository/cassandra"
+	"secureconnect-backend/internal/repository/cockroach"
 	"secureconnect-backend/internal/repository/redis"
 	chatService "secureconnect-backend/internal/service/chat"
+	notificationService "secureconnect-backend/internal/service/notification"
 	"secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
+	"secureconnect-backend/pkg/metrics"
 )
 
 func main() {
@@ -68,21 +71,47 @@ func main() {
 
 	log.Println("✅ Connected to Redis")
 
-	// 4. Initialize Repositories
+	// 4. Connect to CockroachDB
+	cockroachConfig := &database.CockroachConfig{
+		Host:     env.GetString("COCKROACH_HOST", "localhost"),
+		Port:     env.GetInt("COCKROACH_PORT", 26257),
+		User:     env.GetString("COCKROACH_USER", "root"),
+		Password: env.GetString("COCKROACH_PASSWORD", ""),
+		Database: env.GetString("COCKROACH_DATABASE", "secureconnect_db"),
+		SSLMode:  env.GetString("COCKROACH_SSLMODE", "disable"),
+	}
+
+	cockroachDB, err := database.NewCockroachDB(context.Background(), cockroachConfig)
+	if err != nil {
+		log.Fatalf("Failed to connect to CockroachDB: %v", err)
+	}
+	defer cockroachDB.Close()
+
+	log.Println("✅ Connected to CockroachDB")
+
+	// 5. Initialize Repositories
 	messageRepo := cassandra.NewMessageRepository(cassandraDB.Session)
 	presenceRepo := redis.NewPresenceRepository(redisDB.Client)
+	userRepo := cockroach.NewUserRepository(cockroachDB.Pool)
+	conversationRepo := cockroach.NewConversationRepository(cockroachDB.Pool)
+	notificationRepo := cockroach.NewNotificationRepository(cockroachDB.Pool)
 
-	// 5. Initialize Services
+	// 6. Initialize Services
 	redisPublisher := &chatService.RedisAdapter{Client: redisDB.Client}
-	chatSvc := chatService.NewService(messageRepo, presenceRepo, redisPublisher)
+	notificationSvc := notificationService.NewService(notificationRepo)
+	chatSvc := chatService.NewService(messageRepo, presenceRepo, redisPublisher, notificationSvc, conversationRepo, userRepo)
 
-	// 6. Initialize Handlers
+	// 7. Initialize Metrics
+	appMetrics := metrics.NewMetrics("chat-service")
+	prometheusMiddleware := middleware.NewPrometheusMiddleware(appMetrics)
+
+	// 8. Initialize Handlers
 	chatHdlr := chatHandler.NewHandler(chatSvc)
 
-	// 7. Initialize WebSocket Hub
+	// 9. Initialize WebSocket Hub
 	chatHub := wsHandler.NewChatHub(redisDB.Client)
 
-	// 8. Setup Gin Router
+	// 10. Setup Gin Router
 	router := gin.New() // Don't use Default() to have full control
 
 	// Configure trusted proxies for production
@@ -108,6 +137,7 @@ func main() {
 	router.Use(middleware.Recovery())
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
+	router.Use(prometheusMiddleware.Handler())
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {
@@ -117,6 +147,9 @@ func main() {
 			"time":    time.Now().UTC(),
 		})
 	})
+
+	// Metrics endpoint (for Prometheus scraping)
+	router.GET("/metrics", middleware.MetricsHandler(appMetrics))
 
 	// Revocation checker
 	revocationChecker := middleware.NewRedisRevocationChecker(redisDB.Client)
@@ -136,7 +169,7 @@ func main() {
 		v1.GET("/ws/chat", chatHub.ServeWS)
 	}
 
-	// 9. Start server
+	// 11. Start server
 	port := env.GetString("PORT", "8082")
 	addr := fmt.Sprintf(":%s", port)
 	server := &http.Server{
@@ -152,7 +185,7 @@ func main() {
 		}
 	}()
 
-	// 10. Graceful shutdown
+	// 11. Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

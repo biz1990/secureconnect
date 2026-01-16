@@ -47,15 +47,24 @@ func AuthMiddleware(jwtManager *jwt.JWTManager, revocationChecker RevocationChec
 			return
 		}
 
+		// Validate JWT audience claim
+		if claims.Audience != "secureconnect-api" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token audience"})
+			c.Abort()
+			return
+		}
+
 		// Check revocation
 		if revocationChecker != nil {
 			revoked, err := revocationChecker.IsTokenRevoked(c.Request.Context(), tokenString)
 			if err != nil {
-				// Fail open or closed? Closed (secure) implies error => unauthorized
-				// But Redis failure shouldn't necessarily block all traffic?
-				// For high security: block.
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify token status"})
-				c.Abort()
+				// Fail-open: Allow request if Redis is unavailable to prevent service disruption
+				// Token validation already passed, so proceed with request
+				// Revocation check is best-effort in this case
+				c.Set("user_id", claims.UserID)
+				c.Set("username", claims.Username)
+				c.Set("role", claims.Role)
+				c.Next()
 				return
 			}
 			if revoked {

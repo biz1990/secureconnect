@@ -56,8 +56,8 @@ RUN chown -R appuser:appgroup /app
 # Switch to appuser (don't run as root)
 USER appuser
 
-# Expose port 8080
-EXPOSE 8080
+# Expose port 8082 for chat-service
+EXPOSE 8082
 
 # Run the binary
 CMD ["./service"]

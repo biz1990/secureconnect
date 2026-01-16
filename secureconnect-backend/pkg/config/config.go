@@ -14,6 +14,7 @@ type Config struct {
 	Redis     RedisConfig
 	Cassandra CassandraConfig
 	MinIO     MinIOConfig
+	SMTP      SMTPConfig
 	JWT       JWTConfig
 	Log       LogConfig
 }
@@ -53,6 +54,15 @@ type CassandraConfig struct {
 	Keyspace    string
 	Consistency string
 	Timeout     time.Duration
+}
+
+// SMTPConfig holds SMTP configuration
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
 }
 
 // MinIOConfig holds MinIO configuration
@@ -110,6 +120,13 @@ func Load() (*Config, error) {
 			Keyspace:    getEnv("CASSANDRA_KEYSPACE", "secureconnect"),
 			Consistency: getEnv("CASSANDRA_CONSISTENCY", "QUORUM"),
 			Timeout:     time.Duration(getEnvAsInt("CASSANDRA_TIMEOUT", 600)) * time.Millisecond,
+		},
+		SMTP: SMTPConfig{
+			Host:     getEnv("SMTP_HOST", "smtp.gmail.com"),
+			Port:     getEnvAsInt("SMTP_PORT", 587),
+			Username: getEnv("SMTP_USERNAME", ""),
+			Password: getEnv("SMTP_PASSWORD", ""),
+			From:     getEnv("SMTP_FROM", "noreply@secureconnect.com"),
 		},
 		MinIO: MinIOConfig{
 			Endpoint:  getEnv("MINIO_ENDPOINT", "localhost:9000"),

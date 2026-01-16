@@ -2,7 +2,6 @@ package cassandra
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
@@ -10,8 +9,14 @@ import (
 	"secureconnect-backend/internal/domain"
 )
 
+// Helper function to convert uuid.UUID to gocql.UUID
+func toGocqlUUID(u uuid.UUID) gocql.UUID {
+	var g [16]byte
+	copy(g[:], u[:])
+	return g
+}
+
 // MessageRepository handles message storage in Cassandra
-// Implements bucketing strategy for scalability
 type MessageRepository struct {
 	session *gocql.Session
 }
@@ -23,60 +28,72 @@ func NewMessageRepository(session *gocql.Session) *MessageRepository {
 
 // Save inserts a new message into Cassandra
 func (r *MessageRepository) Save(message *domain.Message) error {
-	// Calculate bucket if not already set
-	if message.Bucket == 0 {
-		message.Bucket = domain.CalculateBucket(message.CreatedAt)
-	}
-
-	// Generate message_id if not set (TIMEUUID)
+	// Generate message_id if not set
 	if message.MessageID == uuid.Nil {
 		message.MessageID = uuid.New()
 	}
 
-	query := `
-		INSERT INTO messages (
-			conversation_id, bucket, message_id, sender_id, content,
-			is_encrypted, message_type, metadata, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`
+	// Handle metadata - convert to map[string]string for Cassandra MAP<TEXT, TEXT>
+	metadataMap := make(map[string]string)
+	if message.Metadata != nil {
+		for k, v := range message.Metadata {
+			// Convert value to string
+			switch val := v.(type) {
+			case string:
+				metadataMap[k] = val
+			case int, int8, int16, int32, int64:
+				metadataMap[k] = fmt.Sprintf("%d", val)
+			case float32, float64:
+				metadataMap[k] = fmt.Sprintf("%f", val)
+			case bool:
+				metadataMap[k] = fmt.Sprintf("%t", val)
+			default:
+				metadataMap[k] = fmt.Sprintf("%v", val)
+			}
+		}
+	} else {
+		// Use empty map if metadata is nil
+		metadataMap = map[string]string{}
+	}
+
+	query := `INSERT INTO messages (conversation_id, message_id, sender_id, content, is_encrypted, message_type, metadata, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
 	err := r.session.Query(query,
-		message.ConversationID,
-		message.Bucket,
-		message.MessageID,
-		message.SenderID,
+		toGocqlUUID(message.ConversationID),
+		toGocqlUUID(message.MessageID),
+		toGocqlUUID(message.SenderID),
 		message.Content,
 		message.IsEncrypted,
 		message.MessageType,
-		message.Metadata,
-		message.CreatedAt,
+		metadataMap,
+		message.SentAt,
 	).Exec()
 
 	if err != nil {
+		fmt.Printf("CASSANDRA ERROR: failed to save message: %v\n", err)
 		return fmt.Errorf("failed to save message: %w", err)
 	}
 
+	fmt.Printf("CASSANDRA SUCCESS: message saved: conversation_id=%s, message_id=%s\n", message.ConversationID, message.MessageID)
 	return nil
 }
 
 // GetByConversation retrieves messages for a conversation with pagination
-// Uses bucket + created_at for efficient querying
 func (r *MessageRepository) GetByConversation(
 	conversationID uuid.UUID,
-	bucket int,
 	limit int,
 	pageState []byte,
 ) ([]*domain.Message, []byte, error) {
 	query := `
-		SELECT conversation_id, bucket, message_id, sender_id, content,
-		       is_encrypted, message_type, metadata, created_at
+		SELECT conversation_id, message_id, sender_id, content,
+		       is_encrypted, message_type, metadata, sent_at
 		FROM messages
-		WHERE conversation_id = ? AND bucket = ?
-		ORDER BY created_at DESC
+		WHERE conversation_id = ?
+		ORDER BY sent_at DESC
 		LIMIT ?
 	`
 
-	iter := r.session.Query(query, conversationID, bucket, limit).PageState(pageState).Iter()
+	iter := r.session.Query(query, toGocqlUUID(conversationID), limit).PageState(pageState).Iter()
 	defer iter.Close()
 
 	var messages []*domain.Message
@@ -85,14 +102,13 @@ func (r *MessageRepository) GetByConversation(
 		message := &domain.Message{}
 		if !iter.Scan(
 			&message.ConversationID,
-			&message.Bucket,
 			&message.MessageID,
 			&message.SenderID,
 			&message.Content,
 			&message.IsEncrypted,
 			&message.MessageType,
 			&message.Metadata,
-			&message.CreatedAt,
+			&message.SentAt,
 		) {
 			break
 		}
@@ -116,57 +132,47 @@ func (r *MessageRepository) GetMultipleBuckets(
 	buckets []int,
 	limit int,
 ) ([]*domain.Message, error) {
-	var allMessages []*domain.Message
-
-	for _, bucket := range buckets {
-		messages, _, err := r.GetByConversation(conversationID, bucket, limit, nil)
-		if err != nil {
-			return nil, err
-		}
-		allMessages = append(allMessages, messages...)
-
-		// Stop if we have enough messages
-		if len(allMessages) >= limit {
-			break
-		}
+	// Simplified implementation - just get recent messages
+	// Bucketing is no longer used with the new schema
+	messages, _, err := r.GetByConversation(conversationID, limit, nil)
+	if err != nil {
+		return nil, err
 	}
 
 	// Limit total results
-	if len(allMessages) > limit {
-		allMessages = allMessages[:limit]
+	if len(messages) > limit {
+		messages = messages[:limit]
 	}
 
-	return allMessages, nil
+	return messages, nil
 }
 
 // GetRecentMessages gets messages from current bucket (most common case)
 func (r *MessageRepository) GetRecentMessages(conversationID uuid.UUID, limit int) ([]*domain.Message, error) {
-	currentBucket := domain.CalculateBucket(time.Now())
-	messages, _, err := r.GetByConversation(conversationID, currentBucket, limit, nil)
+	messages, _, err := r.GetByConversation(conversationID, limit, nil)
 	return messages, err
 }
 
 // GetByID retrieves a specific message
 func (r *MessageRepository) GetByID(conversationID uuid.UUID, bucket int, messageID uuid.UUID) (*domain.Message, error) {
 	query := `
-		SELECT conversation_id, bucket, message_id, sender_id, content,
-		       is_encrypted, message_type, metadata, created_at
+		SELECT conversation_id, message_id, sender_id, content,
+		       is_encrypted, message_type, metadata, sent_at
 		FROM messages
-		WHERE conversation_id = ? AND bucket = ? AND message_id = ?
+		WHERE conversation_id = ? AND message_id = ?
 		LIMIT 1
 	`
 
 	message := &domain.Message{}
-	err := r.session.Query(query, conversationID, bucket, messageID).Scan(
+	err := r.session.Query(query, toGocqlUUID(conversationID), toGocqlUUID(messageID)).Scan(
 		&message.ConversationID,
-		&message.Bucket,
 		&message.MessageID,
 		&message.SenderID,
 		&message.Content,
 		&message.IsEncrypted,
 		&message.MessageType,
 		&message.Metadata,
-		&message.CreatedAt,
+		&message.SentAt,
 	)
 
 	if err != nil {
@@ -181,9 +187,9 @@ func (r *MessageRepository) GetByID(conversationID uuid.UUID, bucket int, messag
 
 // Delete removes a message (if needed for GDPR compliance)
 func (r *MessageRepository) Delete(conversationID uuid.UUID, bucket int, messageID uuid.UUID) error {
-	query := `DELETE FROM messages WHERE conversation_id = ? AND bucket = ? AND message_id = ?`
+	query := `DELETE FROM messages WHERE conversation_id = ? AND message_id = ?`
 
-	err := r.session.Query(query, conversationID, bucket, messageID).Exec()
+	err := r.session.Query(query, toGocqlUUID(conversationID), toGocqlUUID(messageID)).Exec()
 	if err != nil {
 		return fmt.Errorf("failed to delete message: %w", err)
 	}
@@ -193,29 +199,13 @@ func (r *MessageRepository) Delete(conversationID uuid.UUID, bucket int, message
 
 // CountMessages counts total messages in a conversation (expensive, use sparingly)
 func (r *MessageRepository) CountMessages(conversationID uuid.UUID, bucket int) (int, error) {
-	query := `SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND bucket = ?`
+	query := `SELECT COUNT(*) FROM messages WHERE conversation_id = ?`
 
 	var count int
-	err := r.session.Query(query, conversationID, bucket).Scan(&count)
+	err := r.session.Query(query, toGocqlUUID(conversationID)).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count messages: %w", err)
 	}
 
 	return count, nil
-}
-
-// CalculateBucketsForRange generates bucket list for a time range
-func CalculateBucketsForRange(startTime, endTime time.Time) []int {
-	var buckets []int
-
-	current := startTime
-	for current.Before(endTime) || current.Equal(endTime) {
-		bucket := domain.CalculateBucket(current)
-		buckets = append(buckets, bucket)
-
-		// Move to next month
-		current = current.AddDate(0, 1, 0)
-	}
-
-	return buckets
 }

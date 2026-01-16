@@ -7,6 +7,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+
+	"secureconnect-backend/pkg/env"
 )
 
 // RateLimitConfig holds rate limit configuration for different endpoints
@@ -22,52 +24,144 @@ type RateLimitConfigManager struct {
 }
 
 // NewRateLimitConfigManager creates a new rate limit configuration manager
+// Rate limits can be overridden via environment variables:
+// - RATELIMIT_AUTH_REGISTER: Requests per minute for /v1/auth/register (default: 5)
+// - RATELIMIT_AUTH_LOGIN: Requests per minute for /v1/auth/login (default: 10)
+// - RATELIMIT_AUTH_REFRESH: Requests per minute for /v1/auth/refresh (default: 10)
+// - RATELIMIT_AUTH_PASSWORD_RESET_REQUEST: Requests per minute for /v1/auth/password-reset/request (default: 3)
+// - RATELIMIT_AUTH_PASSWORD_RESET_CONFIRM: Requests per minute for /v1/auth/password-reset/confirm (default: 5)
 func NewRateLimitConfigManager() *RateLimitConfigManager {
 	return &RateLimitConfigManager{
 		configs: map[string]RateLimitConfig{
 			// Authentication endpoints - stricter limits
-			"/v1/auth/register": {Requests: 5, Window: time.Minute},
-			"/v1/auth/login":    {Requests: 10, Window: time.Minute},
-			"/v1/auth/refresh":  {Requests: 10, Window: time.Minute},
+			"/v1/auth/register": {
+				Requests: env.GetInt("RATELIMIT_AUTH_REGISTER", 5),
+				Window:   time.Minute,
+			},
+			"/v1/auth/login": {
+				Requests: env.GetInt("RATELIMIT_AUTH_LOGIN", 10),
+				Window:   time.Minute,
+			},
+			"/v1/auth/refresh": {
+				Requests: env.GetInt("RATELIMIT_AUTH_REFRESH", 10),
+				Window:   time.Minute,
+			},
+			"/v1/auth/password-reset/request": {
+				Requests: env.GetInt("RATELIMIT_AUTH_PASSWORD_RESET_REQUEST", 3), // Prevent email spam
+				Window:   time.Minute,
+			},
+			"/v1/auth/password-reset/confirm": {
+				Requests: env.GetInt("RATELIMIT_AUTH_PASSWORD_RESET_CONFIRM", 5), // Prevent token abuse
+				Window:   time.Minute,
+			},
 
 			// User management endpoints
-			"/v1/users/me":          {Requests: 50, Window: time.Minute},
-			"/v1/users/me/password": {Requests: 5, Window: time.Minute},
-			"/v1/users/me/email":    {Requests: 5, Window: time.Minute},
-			"/v1/users/me/friends":  {Requests: 30, Window: time.Minute},
-			"/v1/users/:id/block":   {Requests: 20, Window: time.Minute},
+			"/v1/users/me": {
+				Requests: env.GetInt("RATELIMIT_USERS_ME", 50),
+				Window:   time.Minute,
+			},
+			"/v1/users/me/password": {
+				Requests: env.GetInt("RATELIMIT_USERS_ME_PASSWORD", 5),
+				Window:   time.Minute,
+			},
+			"/v1/users/me/email": {
+				Requests: env.GetInt("RATELIMIT_USERS_ME_EMAIL", 5),
+				Window:   time.Minute,
+			},
+			"/v1/users/me/friends": {
+				Requests: env.GetInt("RATELIMIT_USERS_ME_FRIENDS", 30),
+				Window:   time.Minute,
+			},
+			"/v1/users/:id/block": {
+				Requests: env.GetInt("RATELIMIT_USERS_ID_BLOCK", 20),
+				Window:   time.Minute,
+			},
 
 			// Key management endpoints
-			"/v1/keys/upload": {Requests: 20, Window: time.Minute},
-			"/v1/keys/rotate": {Requests: 10, Window: time.Minute},
+			"/v1/keys/upload": {
+				Requests: env.GetInt("RATELIMIT_KEYS_UPLOAD", 20),
+				Window:   time.Minute,
+			},
+			"/v1/keys/rotate": {
+				Requests: env.GetInt("RATELIMIT_KEYS_ROTATE", 10),
+				Window:   time.Minute,
+			},
 
 			// Message endpoints
-			"/v1/messages":        {Requests: 100, Window: time.Minute},
-			"/v1/messages/search": {Requests: 50, Window: time.Minute},
+			"/v1/messages": {
+				Requests: env.GetInt("RATELIMIT_MESSAGES", 100),
+				Window:   time.Minute,
+			},
+			"/v1/messages/search": {
+				Requests: env.GetInt("RATELIMIT_MESSAGES_SEARCH", 50),
+				Window:   time.Minute,
+			},
 
 			// Conversation endpoints
-			"/v1/conversations":                  {Requests: 50, Window: time.Minute},
-			"/v1/conversations/:id":              {Requests: 100, Window: time.Minute},
-			"/v1/conversations/:id/participants": {Requests: 30, Window: time.Minute},
+			"/v1/conversations": {
+				Requests: env.GetInt("RATELIMIT_CONVERSATIONS", 50),
+				Window:   time.Minute,
+			},
+			"/v1/conversations/:id": {
+				Requests: env.GetInt("RATELIMIT_CONVERSATIONS_ID", 100),
+				Window:   time.Minute,
+			},
+			"/v1/conversations/:id/participants": {
+				Requests: env.GetInt("RATELIMIT_CONVERSATIONS_ID_PARTICIPANTS", 30),
+				Window:   time.Minute,
+			},
 
 			// Call endpoints
-			"/v1/calls/initiate": {Requests: 10, Window: time.Minute},
-			"/v1/calls/:id":      {Requests: 30, Window: time.Minute},
-			"/v1/calls/:id/join": {Requests: 10, Window: time.Minute},
+			"/v1/calls/initiate": {
+				Requests: env.GetInt("RATELIMIT_CALLS_INITIATE", 10),
+				Window:   time.Minute,
+			},
+			"/v1/calls/:id": {
+				Requests: env.GetInt("RATELIMIT_CALLS_ID", 30),
+				Window:   time.Minute,
+			},
+			"/v1/calls/:id/join": {
+				Requests: env.GetInt("RATELIMIT_CALLS_ID_JOIN", 10),
+				Window:   time.Minute,
+			},
 
 			// Storage endpoints
-			"/v1/storage/upload-url":   {Requests: 20, Window: time.Minute},
-			"/v1/storage/download-url": {Requests: 30, Window: time.Minute},
-			"/v1/storage/files":        {Requests: 20, Window: time.Minute},
+			"/v1/storage/upload-url": {
+				Requests: env.GetInt("RATELIMIT_STORAGE_UPLOAD_URL", 20),
+				Window:   time.Minute,
+			},
+			"/v1/storage/download-url": {
+				Requests: env.GetInt("RATELIMIT_STORAGE_DOWNLOAD_URL", 30),
+				Window:   time.Minute,
+			},
+			"/v1/storage/files": {
+				Requests: env.GetInt("RATELIMIT_STORAGE_FILES", 20),
+				Window:   time.Minute,
+			},
 
 			// Notification endpoints
-			"/v1/notifications":          {Requests: 50, Window: time.Minute},
-			"/v1/notifications/read-all": {Requests: 20, Window: time.Minute},
+			"/v1/notifications": {
+				Requests: env.GetInt("RATELIMIT_NOTIFICATIONS", 50),
+				Window:   time.Minute,
+			},
+			"/v1/notifications/read-all": {
+				Requests: env.GetInt("RATELIMIT_NOTIFICATIONS_READ_ALL", 20),
+				Window:   time.Minute,
+			},
 
 			// Admin endpoints - very strict limits
-			"/v1/admin/stats":      {Requests: 30, Window: time.Minute},
-			"/v1/admin/users":      {Requests: 20, Window: time.Minute},
-			"/v1/admin/audit-logs": {Requests: 50, Window: time.Minute},
+			"/v1/admin/stats": {
+				Requests: env.GetInt("RATELIMIT_ADMIN_STATS", 30),
+				Window:   time.Minute,
+			},
+			"/v1/admin/users": {
+				Requests: env.GetInt("RATELIMIT_ADMIN_USERS", 20),
+				Window:   time.Minute,
+			},
+			"/v1/admin/audit-logs": {
+				Requests: env.GetInt("RATELIMIT_ADMIN_AUDIT_LOGS", 50),
+				Window:   time.Minute,
+			},
 		},
 	}
 }
@@ -98,9 +192,9 @@ func (m *RateLimitConfigManager) GetConfigForPath(path string) RateLimitConfig {
 		}
 	}
 
-	// Default rate limit
+	// Default rate limit (configurable via RATELIMIT_DEFAULT)
 	return RateLimitConfig{
-		Requests: 100,
+		Requests: env.GetInt("RATELIMIT_DEFAULT", 100),
 		Window:   time.Minute,
 	}
 }

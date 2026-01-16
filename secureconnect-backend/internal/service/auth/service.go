@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -10,8 +12,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"secureconnect-backend/internal/domain"
+	"secureconnect-backend/internal/repository/cockroach"
 	"secureconnect-backend/internal/repository/redis"
 	"secureconnect-backend/pkg/constants"
+	"secureconnect-backend/pkg/email"
+	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
 	"secureconnect-backend/pkg/logger"
 )
@@ -21,6 +26,7 @@ type UserRepository interface {
 	Create(ctx context.Context, user *domain.User) error
 	GetByEmail(ctx context.Context, email string) (*domain.User, error)
 	GetByID(ctx context.Context, userID uuid.UUID) (*domain.User, error)
+	Update(ctx context.Context, user *domain.User) error
 	UpdateStatus(ctx context.Context, userID uuid.UUID, status string) error
 	EmailExists(ctx context.Context, email string) (bool, error)
 	UsernameExists(ctx context.Context, username string) (bool, error)
@@ -56,13 +62,27 @@ type PresenceRepository interface {
 	SetUserOffline(ctx context.Context, userID uuid.UUID) error
 }
 
+// EmailVerificationRepository interface for password reset tokens
+type EmailVerificationRepository interface {
+	CreateToken(ctx context.Context, userID uuid.UUID, newEmail, token string, expiresAt time.Time) error
+	GetToken(ctx context.Context, token string) (*cockroach.EmailVerificationToken, error)
+	MarkTokenUsed(ctx context.Context, token string) error
+}
+
+// EmailService interface for sending emails
+type EmailService interface {
+	SendPasswordResetEmail(ctx context.Context, to string, data *email.PasswordResetEmailData) error
+}
+
 // Service handles authentication business logic
 type Service struct {
-	userRepo      UserRepository
-	directoryRepo DirectoryRepository
-	sessionRepo   SessionRepository
-	presenceRepo  PresenceRepository
-	jwtManager    *jwt.JWTManager
+	userRepo              UserRepository
+	directoryRepo         DirectoryRepository
+	sessionRepo           SessionRepository
+	presenceRepo          PresenceRepository
+	emailVerificationRepo EmailVerificationRepository
+	emailService          EmailService
+	jwtManager            *jwt.JWTManager
 }
 
 // NewService creates a new auth service
@@ -71,14 +91,18 @@ func NewService(
 	directoryRepo DirectoryRepository,
 	sessionRepo SessionRepository,
 	presenceRepo PresenceRepository,
+	emailVerificationRepo EmailVerificationRepository,
+	emailService EmailService,
 	jwtManager *jwt.JWTManager,
 ) *Service {
 	return &Service{
-		userRepo:      userRepo,
-		directoryRepo: directoryRepo,
-		sessionRepo:   sessionRepo,
-		presenceRepo:  presenceRepo,
-		jwtManager:    jwtManager,
+		userRepo:              userRepo,
+		directoryRepo:         directoryRepo,
+		sessionRepo:           sessionRepo,
+		presenceRepo:          presenceRepo,
+		emailVerificationRepo: emailVerificationRepo,
+		emailService:          emailService,
+		jwtManager:            jwtManager,
 	}
 }
 
@@ -456,6 +480,158 @@ func (s *Service) recordFailedLogin(ctx context.Context, email, ip string, userI
 	}
 
 	return nil
+}
+
+// RequestPasswordResetInput contains data for password reset request
+type RequestPasswordResetInput struct {
+	Email string
+}
+
+// RequestPasswordReset initiates password reset flow
+func (s *Service) RequestPasswordReset(ctx context.Context, input *RequestPasswordResetInput) error {
+	// Get user by email
+	user, err := s.userRepo.GetByEmail(ctx, input.Email)
+	if err != nil {
+		// Don't reveal if user exists or not - return generic message
+		logger.Info("Password reset requested for non-existent email",
+			zap.String("email", input.Email))
+		return nil
+	}
+
+	// Generate reset token
+	token, err := generateToken()
+	if err != nil {
+		logger.Error("Failed to generate password reset token",
+			zap.String("user_id", user.UserID.String()),
+			zap.Error(err))
+		return fmt.Errorf("failed to generate reset token")
+	}
+
+	// Create token with 1 hour expiration
+	expiresAt := time.Now().Add(1 * time.Hour)
+	err = s.emailVerificationRepo.CreateToken(ctx, user.UserID, "", token, expiresAt)
+	if err != nil {
+		logger.Error("Failed to create password reset token",
+			zap.String("user_id", user.UserID.String()),
+			zap.Error(err))
+		return fmt.Errorf("failed to create reset token")
+	}
+
+	// Send password reset email
+	err = s.emailService.SendPasswordResetEmail(ctx, user.Email, &email.PasswordResetEmailData{
+		Username: user.Username,
+		Token:    token,
+		AppURL:   env.GetString("APP_URL", "http://localhost:9090"),
+	})
+	if err != nil {
+		logger.Error("Failed to send password reset email",
+			zap.String("user_id", user.UserID.String()),
+			zap.String("email", user.Email),
+			zap.Error(err))
+		// Don't fail - token is created, user can request again
+		return nil
+	}
+
+	logger.Info("Password reset email sent",
+		zap.String("user_id", user.UserID.String()),
+		zap.String("email", user.Email))
+
+	return nil
+}
+
+// ResetPasswordInput contains data for password reset
+type ResetPasswordInput struct {
+	Token       string
+	NewPassword string
+}
+
+// ResetPassword completes password reset flow
+func (s *Service) ResetPassword(ctx context.Context, input *ResetPasswordInput) error {
+	// Get token
+	evt, err := s.emailVerificationRepo.GetToken(ctx, input.Token)
+	if err != nil {
+		logger.Info("Invalid password reset token used",
+			zap.String("token_prefix", maskToken(input.Token)))
+		return fmt.Errorf("invalid or expired token")
+	}
+
+	// Check if token is expired
+	if time.Now().After(evt.ExpiresAt) {
+		logger.Info("Expired password reset token used",
+			zap.String("token_prefix", maskToken(input.Token)),
+			zap.String("user_id", evt.UserID.String()))
+		return fmt.Errorf("token has expired")
+	}
+
+	// Check if token is already used
+	if evt.UsedAt != nil {
+		logger.Info("Already used password reset token attempted",
+			zap.String("token_prefix", maskToken(input.Token)),
+			zap.String("user_id", evt.UserID.String()))
+		return fmt.Errorf("token already used")
+	}
+
+	// Get user
+	user, err := s.userRepo.GetByID(ctx, evt.UserID)
+	if err != nil {
+		logger.Error("Failed to get user for password reset",
+			zap.String("user_id", evt.UserID.String()),
+			zap.Error(err))
+		return fmt.Errorf("user not found")
+	}
+
+	// Hash new password
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		logger.Error("Failed to hash new password",
+			zap.String("user_id", user.UserID.String()),
+			zap.Error(err))
+		return fmt.Errorf("failed to process password")
+	}
+
+	// Update user password
+	user.PasswordHash = string(passwordHash)
+	user.UpdatedAt = time.Now()
+	err = s.userRepo.Update(ctx, user)
+	if err != nil {
+		logger.Error("Failed to update user password",
+			zap.String("user_id", user.UserID.String()),
+			zap.Error(err))
+		return fmt.Errorf("failed to update password")
+	}
+
+	// Mark token as used
+	err = s.emailVerificationRepo.MarkTokenUsed(ctx, input.Token)
+	if err != nil {
+		logger.Warn("Failed to mark password reset token as used",
+			zap.String("token_prefix", maskToken(input.Token)),
+			zap.String("user_id", evt.UserID.String()),
+			zap.Error(err))
+		// Don't fail - password is already updated
+	}
+
+	logger.Info("Password reset completed",
+		zap.String("user_id", user.UserID.String()))
+
+	return nil
+}
+
+// generateToken generates a random token
+func generateToken() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+// maskToken returns a safe masked version of a token for logging
+// Shows only first 4 and last 4 characters, with middle masked
+func maskToken(token string) string {
+	if len(token) <= 8 {
+		return "****"
+	}
+	return token[:4] + "****" + token[len(token)-4:]
 }
 
 // clearFailedLoginAttempts clears failed login attempts on successful login

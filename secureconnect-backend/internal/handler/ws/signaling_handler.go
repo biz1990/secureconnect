@@ -83,16 +83,7 @@ var signalingUpgrader = websocket.Upgrader{
 		}
 
 		// Check if origin is in allowed list
-		allowedOrigins := map[string]bool{
-			"http://localhost:3000":  true,
-			"http://localhost:8080":  true,
-			"http://127.0.0.1:3000":  true,
-			"http://127.0.0.1:8080":  true,
-			"https://localhost:3000": true,
-			"https://localhost:8080": true,
-			// Add production domains here
-			"https://api.secureconnect.com": true,
-		}
+		allowedOrigins := GetAllowedOrigins()
 		for allowed := range allowedOrigins {
 			if origin == allowed {
 				return true

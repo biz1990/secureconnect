@@ -15,6 +15,7 @@ import (
 	"secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
+	"secureconnect-backend/pkg/metrics"
 )
 
 func main() {
@@ -48,10 +49,14 @@ func main() {
 	}
 	jwtManager := jwt.NewJWTManager(jwtSecret, 15*time.Minute, 30*24*time.Hour)
 
-	// 3. Setup rate limiter
-	rateLimiter := middleware.NewRateLimiter(redisDB.Client, 100, time.Minute) // 100 requests/minute
+	// 3. Setup advanced rate limiter with per-endpoint configuration
+	rateLimiter := middleware.NewAdvancedRateLimiter(redisDB.Client)
 
-	// 4. Setup Gin router
+	// 4. Initialize Metrics
+	appMetrics := metrics.NewMetrics("api-gateway")
+	prometheusMiddleware := middleware.NewPrometheusMiddleware(appMetrics)
+
+	// 5. Setup Gin router
 	router := gin.New() // Don't use Default() to have full control
 
 	// Configure trusted proxies for production
@@ -73,11 +78,12 @@ func main() {
 	}
 	router.SetTrustedProxies(trustedProxies)
 
-	// 5. Apply global middleware
+	// 6. Apply global middleware
 	router.Use(middleware.Recovery())
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
 	router.Use(rateLimiter.Middleware())
+	router.Use(prometheusMiddleware.Handler())
 
 	// Revocation checker
 	revocationChecker := middleware.NewRedisRevocationChecker(redisDB.Client)
@@ -91,12 +97,12 @@ func main() {
 		})
 	})
 
-	// 7. Swagger documentation
+	// 9. Swagger documentation
 	router.GET("/swagger", func(c *gin.Context) {
 		c.File("./api/swagger/openapi.yaml")
 	})
 
-	// 7. API version 1 routes
+	// 10. API version 1 routes
 	v1 := router.Group("/v1")
 	{
 		// Auth Service routes (public)
@@ -205,7 +211,7 @@ func main() {
 		}
 	}
 
-	// 8. Start server
+	// 11. Start server
 	port := env.GetString("PORT", "8080")
 	addr := fmt.Sprintf(":%s", port)
 

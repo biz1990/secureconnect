@@ -26,6 +26,7 @@ import (
 	"secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/email"
 	"secureconnect-backend/pkg/jwt"
+	"secureconnect-backend/pkg/metrics"
 )
 
 func main() {
@@ -45,6 +46,10 @@ func main() {
 		}
 		if len(cfg.JWT.Secret) < 32 {
 			log.Fatal("JWT_SECRET must be at least 32 characters")
+		}
+		// Validate SMTP configuration in production
+		if cfg.SMTP.Username == "" || cfg.SMTP.Password == "" {
+			log.Fatal("SMTP_USERNAME and SMTP_PASSWORD environment variables are required in production")
 		}
 	}
 
@@ -97,21 +102,49 @@ func main() {
 	presenceRepo := redis.NewPresenceRepository(redisDB.Client)
 
 	// 5. Initialize Services
-	authSvc := authService.NewService(userRepo, directoryRepo, sessionRepo, presenceRepo, jwtManager)
+	// Create email service (using SMTP in production, MockSender in development)
+	var emailSender email.Sender
 
-	// Create email service (using mock sender for development)
-	// In production, replace with real email provider (SendGrid, AWS SES, etc.)
-	emailSvc := email.NewService(&email.MockSender{})
+	// Check if SMTP credentials are configured
+	smtpConfigured := cfg.SMTP.Username != "" && cfg.SMTP.Password != ""
+
+	if smtpConfigured {
+		// Use real SMTP sender
+		emailSender = email.NewSMTPSender(&email.SMTPConfig{
+			Host:     cfg.SMTP.Host,
+			Port:     cfg.SMTP.Port,
+			Username: cfg.SMTP.Username,
+			Password: cfg.SMTP.Password,
+			From:     cfg.SMTP.From,
+		})
+		log.Println("📧 Using SMTP email provider")
+	} else {
+		// Development: Use mock sender
+		if cfg.Server.Environment == "production" {
+			log.Fatal("SMTP credentials are required in production mode")
+		}
+		emailSender = &email.MockSender{}
+		log.Println("📧 Using Mock email sender (development)")
+	}
+	emailSvc := email.NewService(emailSender)
+
+	authSvc := authService.NewService(userRepo, directoryRepo, sessionRepo, presenceRepo, emailVerificationRepo, emailSvc, jwtManager)
+
+	// Note: emailSvc now initialized above before authSvc
 
 	userSvc := userService.NewService(userRepo, blockedUserRepo, emailVerificationRepo, emailSvc)
 	conversationSvc := conversationService.NewService(conversationRepo, userRepo)
 
-	// 6. Initialize Handlers
+	// 6. Initialize Metrics
+	appMetrics := metrics.NewMetrics("auth-service")
+	prometheusMiddleware := middleware.NewPrometheusMiddleware(appMetrics)
+
+	// 7. Initialize Handlers
 	authHdlr := authHandler.NewHandler(authSvc)
 	userHdlr := userHandler.NewHandler(userSvc)
 	conversationHdlr := conversation.NewHandler(conversationSvc)
 
-	// 7. Setup Gin Router
+	// 8. Setup Gin Router
 	router := gin.New() // Don't use Default() to have full control
 
 	// Configure trusted proxies for production
@@ -138,6 +171,7 @@ func main() {
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.SecurityHeaders())
 	router.Use(middleware.CORSMiddleware())
+	router.Use(prometheusMiddleware.Handler())
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {
@@ -157,6 +191,8 @@ func main() {
 			auth.POST("/register", authHdlr.Register)
 			auth.POST("/login", authHdlr.Login)
 			auth.POST("/refresh", authHdlr.RefreshToken)
+			auth.POST("/password-reset/request", authHdlr.RequestPasswordReset)
+			auth.POST("/password-reset/confirm", authHdlr.ResetPassword)
 
 			// Protected routes (require authentication)
 			authenticated := auth.Group("")
@@ -208,7 +244,7 @@ func main() {
 		}
 	}
 
-	// 8. Start server in goroutine
+	// 9. Start server in goroutine
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	server := &http.Server{
 		Addr:    addr,
@@ -219,6 +255,7 @@ func main() {
 		log.Printf("🚀 Auth Service starting on port %d\n", cfg.Server.Port)
 		log.Println("📍 Routes:")
 		log.Println("   - Auth: /v1/auth/*")
+		log.Println("   - Password Reset: /v1/auth/password-reset/*")
 		log.Println("   - Users: /v1/users/*")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)

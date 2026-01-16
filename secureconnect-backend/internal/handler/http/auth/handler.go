@@ -43,6 +43,17 @@ type RefreshTokenRequest struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 
+// RequestPasswordResetRequest represents password reset request
+type RequestPasswordResetRequest struct {
+	Email string `json:"email" binding:"required,email"`
+}
+
+// ResetPasswordRequest represents password reset confirmation
+type ResetPasswordRequest struct {
+	Token       string `json:"token" binding:"required"`
+	NewPassword string `json:"new_password" binding:"required,min=8"`
+}
+
 // Register handles user registration
 // POST /v1/auth/register
 func (h *Handler) Register(c *gin.Context) {
@@ -214,5 +225,55 @@ func (h *Handler) GetProfile(c *gin.Context) {
 		"email":    c.GetString("email"),
 		"username": c.GetString("username"),
 		"role":     c.GetString("role"),
+	})
+}
+
+// RequestPasswordReset handles password reset request
+// POST /v1/auth/password-reset/request
+func (h *Handler) RequestPasswordReset(c *gin.Context) {
+	var req RequestPasswordResetRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err.Error())
+		return
+	}
+
+	// Call service
+	err := h.authService.RequestPasswordReset(c.Request.Context(), &auth.RequestPasswordResetInput{
+		Email: req.Email,
+	})
+
+	if err != nil {
+		response.InternalError(c, "Failed to process password reset request")
+		return
+	}
+
+	// Always return success to prevent email enumeration
+	response.Success(c, http.StatusOK, gin.H{
+		"message": "If an account exists with this email, a password reset link has been sent",
+	})
+}
+
+// ResetPassword handles password reset confirmation
+// POST /v1/auth/password-reset/confirm
+func (h *Handler) ResetPassword(c *gin.Context) {
+	var req ResetPasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err.Error())
+		return
+	}
+
+	// Call service
+	err := h.authService.ResetPassword(c.Request.Context(), &auth.ResetPasswordInput{
+		Token:       req.Token,
+		NewPassword: req.NewPassword,
+	})
+
+	if err != nil {
+		response.Unauthorized(c, "Invalid or expired reset token")
+		return
+	}
+
+	response.Success(c, http.StatusOK, gin.H{
+		"message": "Password has been reset successfully",
 	})
 }

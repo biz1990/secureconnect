@@ -149,7 +149,7 @@ func (f *FCMProvider) Send(ctx context.Context, notification *Notification, toke
 			if resp.Error != nil {
 				result.Errors = append(result.Errors, resp.Error)
 				logger.Warn("FCM send failed for token",
-					zap.String("token", tokens[i]),
+					zap.String("token_prefix", maskPushToken(tokens[i])),
 					zap.Error(resp.Error))
 
 				// Check if token is invalid
@@ -266,6 +266,15 @@ func (f *FCMProvider) SubscribeToTopic(ctx context.Context, tokens []string, top
 		zap.String("topic", topic))
 
 	return nil
+}
+
+// maskPushToken returns a safe masked version of a push token for logging
+// Shows only first 8 and last 8 characters, with middle masked
+func maskPushToken(token string) string {
+	if len(token) <= 16 {
+		return "********"
+	}
+	return token[:8] + "..." + token[len(token)-8:]
 }
 
 // UnsubscribeFromTopic unsubscribes tokens from a topic

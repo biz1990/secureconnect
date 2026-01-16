@@ -22,8 +22,8 @@ func (m *MockMessageRepository) Save(message *domain.Message) error {
 	return args.Error(0)
 }
 
-func (m *MockMessageRepository) GetByConversation(conversationID uuid.UUID, bucket int, limit int, pageState []byte) ([]*domain.Message, []byte, error) {
-	args := m.Called(conversationID, bucket, limit, pageState)
+func (m *MockMessageRepository) GetByConversation(conversationID uuid.UUID, limit int, pageState []byte) ([]*domain.Message, []byte, error) {
+	args := m.Called(conversationID, limit, pageState)
 	return args.Get(0).([]*domain.Message), args.Get(1).([]byte), args.Error(2)
 }
 
@@ -60,12 +60,45 @@ func (m *MockPublisher) Publish(ctx context.Context, channel string, message int
 	return args.Error(0)
 }
 
+type MockNotificationService struct {
+	mock.Mock
+}
+
+func (m *MockNotificationService) CreateMessageNotification(ctx context.Context, userID uuid.UUID, senderName string, conversationID uuid.UUID) error {
+	args := m.Called(ctx, userID, senderName, conversationID)
+	return args.Error(0)
+}
+
+type MockConversationRepository struct {
+	mock.Mock
+}
+
+func (m *MockConversationRepository) GetParticipants(ctx context.Context, conversationID uuid.UUID) ([]uuid.UUID, error) {
+	args := m.Called(ctx, conversationID)
+	return args.Get(0).([]uuid.UUID), args.Error(1)
+}
+
+type MockUserRepository struct {
+	mock.Mock
+}
+
+func (m *MockUserRepository) GetByID(ctx context.Context, userID uuid.UUID) (*domain.User, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.User), args.Error(1)
+}
+
 func TestSendMessage(t *testing.T) {
 	mockMsgRepo := new(MockMessageRepository)
 	mockPresenceRepo := new(MockPresenceRepository)
 	mockPublisher := new(MockPublisher)
+	mockNotificationSvc := new(MockNotificationService)
+	mockConversationRepo := new(MockConversationRepository)
+	mockUserRepo := new(MockUserRepository)
 
-	service := NewService(mockMsgRepo, mockPresenceRepo, mockPublisher)
+	service := NewService(mockMsgRepo, mockPresenceRepo, mockPublisher, mockNotificationSvc, mockConversationRepo, mockUserRepo)
 
 	conversationID := uuid.New()
 	senderID := uuid.New()
@@ -99,8 +132,11 @@ func TestGetMessages(t *testing.T) {
 	mockMsgRepo := new(MockMessageRepository)
 	mockPresenceRepo := new(MockPresenceRepository)
 	mockPublisher := new(MockPublisher)
+	mockNotificationSvc := new(MockNotificationService)
+	mockConversationRepo := new(MockConversationRepository)
+	mockUserRepo := new(MockUserRepository)
 
-	service := NewService(mockMsgRepo, mockPresenceRepo, mockPublisher)
+	service := NewService(mockMsgRepo, mockPresenceRepo, mockPublisher, mockNotificationSvc, mockConversationRepo, mockUserRepo)
 
 	conversationID := uuid.New()
 	input := &GetMessagesInput{
@@ -113,14 +149,14 @@ func TestGetMessages(t *testing.T) {
 			MessageID:      uuid.New(),
 			ConversationID: conversationID,
 			Content:        "Msg 1",
-			CreatedAt:      time.Now(),
+			SentAt:         time.Now(),
 		},
 	}
 
 	ctx := context.Background()
 
 	// Expectations
-	mockMsgRepo.On("GetByConversation", conversationID, mock.AnythingOfType("int"), 20, []byte(nil)).Return(mockMessages, []byte(nil), nil)
+	mockMsgRepo.On("GetByConversation", conversationID, 20, []byte(nil)).Return(mockMessages, []byte(nil), nil)
 
 	// Execute
 	output, err := service.GetMessages(ctx, input)

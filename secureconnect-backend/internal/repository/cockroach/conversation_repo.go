@@ -238,10 +238,10 @@ func (r *ConversationRepository) UpdateSettings(ctx context.Context, conversatio
 	} else {
 		// Insert
 		query := `
-			INSERT INTO conversation_settings (conversation_id, is_e2ee_enabled, created_at, updated_at)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO conversation_settings (conversation_id, is_e2ee_enabled, updated_at)
+			VALUES ($1, $2, $3)
 		`
-		_, err = r.pool.Exec(ctx, query, conversationID, settings.IsE2EEEnabled, time.Now(), time.Now())
+		_, err = r.pool.Exec(ctx, query, conversationID, settings.IsE2EEEnabled, time.Now())
 	}
 
 	if err != nil {
@@ -272,10 +272,10 @@ func (r *ConversationRepository) UpdateSettingsTx(ctx context.Context, tx *Trans
 	} else {
 		// Insert
 		query := `
-			INSERT INTO conversation_settings (conversation_id, is_e2ee_enabled, created_at, updated_at)
-			VALUES ($1, $2, $3, $4)
+			INSERT INTO conversation_settings (conversation_id, is_e2ee_enabled, updated_at)
+			VALUES ($1, $2, $3)
 		`
-		_, err = tx.tx.Exec(ctx, query, conversationID, settings.IsE2EEEnabled, time.Now(), time.Now())
+		_, err = tx.tx.Exec(ctx, query, conversationID, settings.IsE2EEEnabled, time.Now())
 	}
 
 	if err != nil {

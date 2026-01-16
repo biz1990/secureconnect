@@ -86,9 +86,6 @@ func TestNewService_BucketExists(t *testing.T) {
 	mockStorage := new(MockObjectStorage)
 	mockRepo := new(MockFileRepository)
 
-	ctx := context.Background()
-	_ = ctx // Used in service
-
 	// Expectations - NewService calls BucketExists
 	// Note: NewService creates its own background context, so we use mock.Anything for context
 	mockStorage.On("BucketExists", mock.Anything, "test-bucket").Return(true, nil)

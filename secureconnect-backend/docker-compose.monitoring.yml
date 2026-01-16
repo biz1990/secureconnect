@@ -20,7 +20,7 @@ services:
     image: prom/prometheus:v2.47.0
     container_name: secureconnect_prometheus
     ports:
-      - "9090:9090"
+      - "9091:9090"
     volumes:
       - prometheus_data:/prometheus
       - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -61,6 +61,7 @@ services:
       - prometheus
     networks:
       - monitoring-net
+      - secureconnect-net
     restart: always
     healthcheck:
       test: [ "CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health" ]
@@ -80,6 +81,7 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
     networks:
       - monitoring-net
+      - secureconnect-net
     restart: always
 
   # 4. PROMTAIL - Log Collector (Optional)
@@ -94,4 +96,5 @@ services:
       - loki
     networks:
       - monitoring-net
+      - secureconnect-net
     restart: always

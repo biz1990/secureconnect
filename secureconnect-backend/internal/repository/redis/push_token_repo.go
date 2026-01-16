@@ -109,7 +109,7 @@ func (r *PushTokenRepository) GetByUserID(ctx context.Context, userID uuid.UUID)
 		if err != nil {
 			logger.Warn("Failed to get token",
 				zap.String("user_id", userID.String()),
-				zap.String("token", tokenStr),
+				zap.String("token_prefix", maskPushToken(tokenStr)),
 				zap.Error(err))
 			continue
 		}
@@ -201,7 +201,7 @@ func (r *PushTokenRepository) DeleteByUserID(ctx context.Context, userID uuid.UU
 		if err := r.client.Del(ctx, tokenKey).Err(); err != nil {
 			logger.Warn("Failed to delete token",
 				zap.String("user_id", userID.String()),
-				zap.String("token", tokenStr),
+				zap.String("token_prefix", maskPushToken(tokenStr)),
 				zap.Error(err))
 		}
 	}
@@ -322,4 +322,13 @@ func (r *PushTokenRepository) GetActiveTokensCount(ctx context.Context, userID u
 	}
 
 	return count, nil
+}
+
+// maskPushToken returns a safe masked version of a push token for logging
+// Shows only first 8 and last 8 characters, with middle masked
+func maskPushToken(token string) string {
+	if len(token) <= 16 {
+		return "********"
+	}
+	return token[:8] + "..." + token[len(token)-8:]
 }

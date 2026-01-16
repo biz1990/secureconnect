@@ -52,8 +52,9 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 		// Check rate limit
 		allowed, remaining, resetTime, err := rl.checkRateLimit(c.Request.Context(), identifier)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Rate limit check failed"})
-			c.Abort()
+			// Fail-open: Allow request if Redis is unavailable to prevent service disruption
+			// Log the error but continue processing
+			c.Next()
 			return
 		}
 

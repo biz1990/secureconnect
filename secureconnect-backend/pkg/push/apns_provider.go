@@ -184,14 +184,14 @@ func (a *APNsProvider) Send(ctx context.Context, notification *Notification, tok
 			result.Errors = append(result.Errors, err)
 			logger.Warn("Failed to send APNs notification",
 				zap.Error(err),
-				zap.String("device_token", deviceToken))
+				zap.String("device_token_prefix", maskDeviceToken(deviceToken)))
 			continue
 		}
 
 		if resp.StatusCode == 200 {
 			result.SuccessCount++
 			logger.Debug("APNs notification sent successfully",
-				zap.String("device_token", deviceToken),
+				zap.String("device_token_prefix", maskDeviceToken(deviceToken)),
 				zap.String("apns_id", resp.ApnsID))
 		} else {
 			result.FailureCount++
@@ -208,7 +208,7 @@ func (a *APNsProvider) Send(ctx context.Context, notification *Notification, tok
 			logger.Warn("APNs notification failed",
 				zap.Int("status_code", resp.StatusCode),
 				zap.String("reason", resp.Reason),
-				zap.String("device_token", deviceToken))
+				zap.String("device_token_prefix", maskDeviceToken(deviceToken)))
 		}
 	}
 
@@ -276,6 +276,15 @@ func (a *APNsProvider) SendWithPriority(ctx context.Context, notification *Notif
 	}
 
 	return resp, nil
+}
+
+// maskDeviceToken returns a safe masked version of a device token for logging
+// Shows only first 8 and last 8 characters, with middle masked
+func maskDeviceToken(token string) string {
+	if len(token) <= 16 {
+		return "********"
+	}
+	return token[:8] + "..." + token[len(token)-8:]
 }
 
 // SendSilentNotification sends a silent notification (no alert, just data)

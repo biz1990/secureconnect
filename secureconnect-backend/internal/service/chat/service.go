@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,7 +18,7 @@ import (
 // MessageRepository interface
 type MessageRepository interface {
 	Save(message *domain.Message) error
-	GetByConversation(conversationID uuid.UUID, bucket int, limit int, pageState []byte) ([]*domain.Message, []byte, error)
+	GetByConversation(conversationID uuid.UUID, limit int, pageState []byte) ([]*domain.Message, []byte, error)
 }
 
 // PresenceRepository interface
@@ -33,6 +34,21 @@ type Publisher interface {
 	Publish(ctx context.Context, channel string, message interface{}) error
 }
 
+// NotificationService interface for triggering notifications
+type NotificationService interface {
+	CreateMessageNotification(ctx context.Context, userID uuid.UUID, senderName string, conversationID uuid.UUID) error
+}
+
+// ConversationRepository interface for getting participants
+type ConversationRepository interface {
+	GetParticipants(ctx context.Context, conversationID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// UserRepository interface for getting sender details
+type UserRepository interface {
+	GetByID(ctx context.Context, userID uuid.UUID) (*domain.User, error)
+}
+
 // RedisAdapter adapts redis.Client to Publisher interface
 type RedisAdapter struct {
 	Client *redis.Client
@@ -45,9 +61,12 @@ func (a *RedisAdapter) Publish(ctx context.Context, channel string, message inte
 
 // Service handles chat business logic
 type Service struct {
-	messageRepo  MessageRepository
-	presenceRepo PresenceRepository
-	publisher    Publisher
+	messageRepo         MessageRepository
+	presenceRepo        PresenceRepository
+	publisher           Publisher
+	notificationService NotificationService
+	conversationRepo    ConversationRepository
+	userRepo            UserRepository
 }
 
 // NewService creates a new chat service
@@ -55,11 +74,17 @@ func NewService(
 	messageRepo MessageRepository,
 	presenceRepo PresenceRepository,
 	publisher Publisher,
+	notificationService NotificationService,
+	conversationRepo ConversationRepository,
+	userRepo UserRepository,
 ) *Service {
 	return &Service{
-		messageRepo:  messageRepo,
-		presenceRepo: presenceRepo,
-		publisher:    publisher,
+		messageRepo:         messageRepo,
+		presenceRepo:        presenceRepo,
+		publisher:           publisher,
+		notificationService: notificationService,
+		conversationRepo:    conversationRepo,
+		userRepo:            userRepo,
 	}
 }
 
@@ -89,14 +114,16 @@ func (s *Service) SendMessage(ctx context.Context, input *SendMessageInput) (*Se
 		IsEncrypted:    input.IsEncrypted,
 		MessageType:    input.MessageType,
 		Metadata:       input.Metadata,
-		CreatedAt:      time.Now(),
-		Bucket:         domain.CalculateBucket(time.Now()),
+		SentAt:         time.Now(),
 	}
 
 	// Save to Cassandra
 	if err := s.messageRepo.Save(message); err != nil {
 		return nil, fmt.Errorf("failed to save message: %w", err)
 	}
+
+	// Trigger push notifications for conversation participants (non-blocking)
+	go s.notifyMessageRecipients(ctx, input.SenderID, input.ConversationID, input.Content)
 
 	// Publish to Redis Pub/Sub for real-time delivery
 	channel := fmt.Sprintf("chat:%s", input.ConversationID)
@@ -126,7 +153,7 @@ func (s *Service) SendMessage(ctx context.Context, input *SendMessageInput) (*Se
 		IsEncrypted:    message.IsEncrypted,
 		MessageType:    message.MessageType,
 		Metadata:       message.Metadata,
-		CreatedAt:      message.CreatedAt,
+		SentAt:         message.SentAt,
 	}
 
 	return &SendMessageOutput{Message: response}, nil
@@ -148,13 +175,9 @@ type GetMessagesOutput struct {
 
 // GetMessages retrieves conversation messages with pagination
 func (s *Service) GetMessages(ctx context.Context, input *GetMessagesInput) (*GetMessagesOutput, error) {
-	// Get current bucket
-	currentBucket := domain.CalculateBucket(time.Now())
-
 	// Fetch messages from Cassandra
 	messages, nextPageState, err := s.messageRepo.GetByConversation(
 		input.ConversationID,
-		currentBucket,
 		input.Limit,
 		input.PageState,
 	)
@@ -174,7 +197,7 @@ func (s *Service) GetMessages(ctx context.Context, input *GetMessagesInput) (*Ge
 			IsEncrypted:    msg.IsEncrypted,
 			MessageType:    msg.MessageType,
 			Metadata:       msg.Metadata,
-			CreatedAt:      msg.CreatedAt,
+			SentAt:         msg.SentAt,
 		}
 	}
 
@@ -196,4 +219,57 @@ func (s *Service) UpdatePresence(ctx context.Context, userID uuid.UUID, online b
 // RefreshPresence keeps user status alive (heartbeat)
 func (s *Service) RefreshPresence(ctx context.Context, userID uuid.UUID) error {
 	return s.presenceRepo.RefreshPresence(ctx, userID)
+}
+
+// notifyMessageRecipients sends push notifications to all conversation participants except sender
+// This runs in a goroutine to avoid blocking the message send operation
+func (s *Service) notifyMessageRecipients(ctx context.Context, senderID, conversationID uuid.UUID, content string) {
+	// Get sender details for notification
+	sender, err := s.userRepo.GetByID(ctx, senderID)
+	if err != nil {
+		logger.Warn("Failed to get sender for notification",
+			zap.String("sender_id", senderID.String()),
+			zap.Error(err))
+		return
+	}
+
+	senderName := sender.DisplayName
+	if senderName == "" {
+		senderName = sender.Username
+	}
+
+	// Get conversation participants
+	participants, err := s.conversationRepo.GetParticipants(ctx, conversationID)
+	if err != nil {
+		logger.Warn("Failed to get conversation participants for notification",
+			zap.String("conversation_id", conversationID.String()),
+			zap.Error(err))
+		return
+	}
+
+	// Send notification to each participant except sender
+	for _, participantID := range participants {
+		if participantID == senderID {
+			continue // Don't notify the sender
+		}
+
+		// Create notification for this participant
+		err := s.notificationService.CreateMessageNotification(ctx, participantID, senderName, conversationID)
+		if err != nil {
+			// Log error but continue with other participants
+			logger.Warn("Failed to create message notification",
+				zap.String("user_id", participantID.String()),
+				zap.String("conversation_id", conversationID.String()),
+				zap.String("sender_id", senderID.String()),
+				zap.Error(err))
+		}
+	}
+}
+
+// truncateMessage truncates message content for preview in notifications
+func truncateMessage(content string, maxLength int) string {
+	if len(content) <= maxLength {
+		return content
+	}
+	return strings.TrimSpace(content[:maxLength]) + "..."
 }

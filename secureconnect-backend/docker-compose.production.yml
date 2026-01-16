@@ -14,6 +14,14 @@ secrets:
     external: true
   minio_secret_key:
     external: true
+  smtp_username:
+    external: true
+  smtp_password:
+    external: true
+  firebase_project_id:
+    external: true
+  firebase_credentials:
+    external: true
 
 # =============================================================================
 # NETWORKS
@@ -169,6 +177,13 @@ services:
       - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
       - CASSANDRA_HOST=cassandra
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
+      - APP_URL=${APP_URL:-https://secureconnect.com}
     volumes:
       - ./configs:/app/configs
       - app_logs:/logs
@@ -213,6 +228,13 @@ services:
       - REDIS_HOST=redis
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - DB_PASSWORD_FILE=/run/secrets/db_password
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
+      - APP_URL=${APP_URL:-https://secureconnect.com}
     volumes:
       - app_logs:/logs
     depends_on:
@@ -255,6 +277,7 @@ services:
       - MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
       - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
     volumes:
       - app_logs:/logs
     depends_on:
@@ -289,10 +312,15 @@ services:
     container_name: video-service
     secrets:
       - jwt_secret
+      - firebase_project_id
+      - firebase_credentials
     environment:
       - ENV=production
       - REDIS_HOST=redis
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
+      - FIREBASE_PROJECT_ID_FILE=/run/secrets/firebase_project_id
+      - FIREBASE_CREDENTIALS_PATH=/run/secrets/firebase_credentials
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
     volumes:
       - app_logs:/logs
     depends_on:
@@ -330,8 +358,10 @@ services:
         condition: service_healthy
       video-service:
         condition: service_healthy
-    networks:
-      - secureconnect-net
+      storage-service:
+        condition: service_healthy
+      networks:
+        - secureconnect-net
     restart: always
     healthcheck:
       test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health" ]

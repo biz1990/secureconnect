@@ -25,12 +25,15 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 	// Parse token without verification (signature validated by middleware already)
 	token, _, err := new(jwt.Parser).ParseUnverified(tokenString, &appJWT.Claims{})
 	if err != nil {
-		return false, fmt.Errorf("failed to parse token: %w", err)
+		// Fail-open: If we can't parse the token, assume it's not revoked
+		// This allows the request to proceed based on JWT validation alone
+		return false, nil
 	}
 
 	claims, ok := token.Claims.(*appJWT.Claims)
 	if !ok {
-		return false, fmt.Errorf("invalid claims")
+		// Fail-open: Invalid claims format, assume not revoked
+		return false, nil
 	}
 
 	if claims.ID == "" {
@@ -40,7 +43,9 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 	key := fmt.Sprintf("blacklist:%s", claims.ID)
 	exists, err := c.client.Exists(ctx, key).Result()
 	if err != nil {
-		return false, fmt.Errorf("failed to check blacklist in redis: %w", err)
+		// Fail-open: If Redis is unavailable, assume token is not revoked
+		// This prevents service disruption during Redis outages
+		return false, nil
 	}
 
 	return exists > 0, nil

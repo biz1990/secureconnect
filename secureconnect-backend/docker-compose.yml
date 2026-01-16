@@ -81,8 +81,8 @@ services:
     container_name: secureconnect_minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
       - "9000:9000" # API
       - "9001:9001" # UI Console
@@ -116,10 +116,17 @@ services:
       - DB_HOST=cockroachdb # Dùng tên container DB thay vì IP (Docker DNS)
       - REDIS_HOST=redis
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - CASSANDRA_HOST=cassandra
-      - JWT_SECRET=super-secret-key-please-use-longer-key
+      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
+      - APP_URL=${APP_URL:-http://localhost:9090}
     volumes:
       - ./configs:/app/configs # Mount configs để đọc (nếu cần)
       - app_logs:/logs
@@ -148,7 +155,14 @@ services:
       - DB_HOST=cockroachdb
       - DB_NAME=secureconnect_poc
       - REDIS_HOST=redis
-      - JWT_SECRET=super-secret-key-please-use-longer-key
+      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
+      - APP_URL=${APP_URL:-http://localhost:9090}
     volumes:
       - app_logs:/logs
     depends_on:
@@ -169,6 +183,8 @@ services:
         SERVICE_NAME: chat-service
         CMD: ./cmd/chat-service
     container_name: chat-service
+    ports:
+      - "8082:8082" # Expose port 8082
     environment:
       - ENV=production
       - CASSANDRA_HOST=cassandra
@@ -176,9 +192,10 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - JWT_SECRET=super-secret-key-please-use-longer-key
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
     volumes:
       - app_logs:/logs
     depends_on:
@@ -207,9 +224,15 @@ services:
       - DB_NAME=secureconnect_poc
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - JWT_SECRET=super-secret-key-please-use-longer-key
+      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      # Push Notification Provider Configuration
+      - PUSH_PROVIDER=firebase
+      - FIREBASE_PROJECT_ID=chatapp-27370
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/firebase-adminsdk.json
     volumes:
       - app_logs:/logs
+      - ../secrets/chatapp-27370-firebase-adminsdk-fbsvc-d4681a8c2e.json:/app/secrets/firebase-adminsdk.json:ro
     depends_on:
       - redis
     networks:
@@ -233,10 +256,11 @@ services:
       - DB_NAME=secureconnect_poc
       - REDIS_HOST=redis
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - CASSANDRA_HOST=cassandra
-      - JWT_SECRET=super-secret-key-please-use-longer-key
+      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
     volumes:
       - app_logs:/logs
     depends_on:

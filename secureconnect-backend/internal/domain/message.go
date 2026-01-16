@@ -12,13 +12,12 @@ import (
 type Message struct {
 	MessageID      uuid.UUID              `json:"message_id" cql:"message_id"`
 	ConversationID uuid.UUID              `json:"conversation_id" cql:"conversation_id"`
-	Bucket         int                    `json:"-" cql:"bucket"` // YYYYMM format for partitioning
 	SenderID       uuid.UUID              `json:"sender_id" cql:"sender_id"`
 	Content        string                 `json:"content" cql:"content"`             // Can be Base64 ciphertext or plaintext
 	IsEncrypted    bool                   `json:"is_encrypted" cql:"is_encrypted"`   // CRITICAL FLAG
 	MessageType    string                 `json:"message_type" cql:"message_type"`   // text, image, video, file
 	Metadata       map[string]interface{} `json:"metadata,omitempty" cql:"metadata"` // AI results or file info
-	CreatedAt      time.Time              `json:"created_at" cql:"created_at"`
+	SentAt         time.Time              `json:"sent_at" cql:"sent_at"`
 }
 
 // MessageCreate represents data needed to send a message
@@ -40,10 +39,5 @@ type MessageResponse struct {
 	IsEncrypted    bool                   `json:"is_encrypted"`
 	MessageType    string                 `json:"message_type"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"` // AI metadata only if is_encrypted=false
-	CreatedAt      time.Time              `json:"created_at"`
-}
-
-// CalculateBucket generates bucket value (YYYYMM) for Cassandra partitioning
-func CalculateBucket(t time.Time) int {
-	return t.Year()*100 + int(t.Month())
+	SentAt         time.Time              `json:"sent_at"`
 }

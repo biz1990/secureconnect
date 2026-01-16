@@ -19,6 +19,7 @@ import (
 	"secureconnect-backend/pkg/config"
 	"secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/jwt"
+	"secureconnect-backend/pkg/metrics"
 )
 
 func main() {
@@ -85,10 +86,14 @@ func main() {
 
 	log.Println("✅ Connected to MinIO")
 
-	// 4. Initialize Handlers
+	// 4. Initialize Metrics
+	appMetrics := metrics.NewMetrics("storage-service")
+	prometheusMiddleware := middleware.NewPrometheusMiddleware(appMetrics)
+
+	// 5. Initialize Handlers
 	storageHdlr := storageHandler.NewHandler(storageSvc)
 
-	// 5. Connect to Redis
+	// 6. Connect to Redis
 	redisDB, err := database.NewRedisDB(&database.RedisConfig{
 		Host:     cfg.Redis.Host,
 		Port:     cfg.Redis.Port,
@@ -107,7 +112,7 @@ func main() {
 	// Revocation checker
 	revocationChecker := middleware.NewRedisRevocationChecker(redisDB.Client)
 
-	// 4. Setup Gin Router
+	// 7. Setup Gin Router
 	router := gin.New() // Don't use Default() to have full control
 
 	// Configure trusted proxies for production
@@ -133,6 +138,7 @@ func main() {
 	router.Use(middleware.Recovery())
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
+	router.Use(prometheusMiddleware.Handler())
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {
@@ -143,6 +149,9 @@ func main() {
 		})
 	})
 
+	// Metrics endpoint (for Prometheus scraping)
+	router.GET("/metrics", middleware.MetricsHandler(appMetrics))
+
 	// Storage routes (all require authentication)
 	v1 := router.Group("/v1/storage")
 	v1.Use(middleware.AuthMiddleware(jwtManager, revocationChecker))
@@ -151,16 +160,12 @@ func main() {
 		v1.GET("/download-url/:file_id", storageHdlr.GenerateDownloadURL)
 		v1.DELETE("/files/:file_id", storageHdlr.DeleteFile)
 
-		// Placeholder for upload complete and quota
-		v1.POST("/upload-complete", func(c *gin.Context) {
-			c.JSON(501, gin.H{"message": "Not implemented yet"})
-		})
-		v1.GET("/quota", func(c *gin.Context) {
-			c.JSON(501, gin.H{"message": "Not implemented yet"})
-		})
+		// Upload complete and quota endpoints
+		v1.POST("/upload-complete", storageHdlr.CompleteUpload)
+		v1.GET("/quota", storageHdlr.GetQuota)
 	}
 
-	// 6. Start server in goroutine
+	// 8. Start server in goroutine
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	server := &http.Server{
 		Addr:    addr,

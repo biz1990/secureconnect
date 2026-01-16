@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
+	"secureconnect-backend/pkg/metrics"
 	"secureconnect-backend/pkg/push"
 )
 
@@ -37,7 +39,10 @@ func main() {
 
 	jwtManager := jwt.NewJWTManager(jwtSecret, 15*time.Minute, 30*24*time.Hour)
 
-	// 2. Connect to CockroachDB for call logs
+	// Validate production mode
+	productionMode := os.Getenv("ENV") == "production"
+
+	// 2. Connect to CockroachDB for call logs with retry logic
 	dbConfig := &database.CockroachConfig{
 		Host:     env.GetString("DB_HOST", "localhost"),
 		Port:     26257,
@@ -47,9 +52,39 @@ func main() {
 		SSLMode:  "disable",
 	}
 
-	db, err := database.NewCockroachDB(ctx, dbConfig)
+	// Connect to CockroachDB with exponential backoff retry
+	var db *database.CockroachDB
+	var err error
+
+	maxRetries := 5
+	baseDelay := 1 * time.Second
+	maxDelay := 30 * time.Second
+
+	// Execute first connection attempt
+	db, err = database.NewCockroachDB(ctx, dbConfig)
+	if err == nil {
+		log.Println("✅ Connected to CockroachDB")
+	} else {
+		// Retry with exponential backoff
+		for attempt := 2; attempt <= maxRetries; attempt++ {
+			delay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt-1)))
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+			log.Printf("⚠️  CockroachDB connection attempt %d failed: %v. Retrying in %v...", attempt, err, delay)
+			time.Sleep(delay)
+
+			// Retry connection
+			db, err = database.NewCockroachDB(ctx, dbConfig)
+			if err == nil {
+				log.Printf("✅ Connected to CockroachDB (attempt %d/%d)", attempt, maxRetries)
+				break
+			}
+		}
+	}
+
 	if err != nil {
-		log.Printf("Warning: Failed to connect to CockroachDB: %v", err)
+		log.Printf("Warning: Failed to connect to CockroachDB after %d attempts: %v", maxRetries, err)
 		log.Println("Running in limited mode without call logs persistence")
 	}
 
@@ -86,26 +121,73 @@ func main() {
 	// 4. Initialize Push Service
 	pushTokenRepo := redisRepo.NewPushTokenRepository(redisClient)
 
-	// Use MockProvider for now - in production, implement real FCM/APNs providers
-	pushProvider := &push.MockProvider{}
-	pushSvc := push.NewService(pushProvider, pushTokenRepo)
+	// Select push provider based on environment
+	var pushProvider push.Provider
+	pushProviderType := env.GetString("PUSH_PROVIDER", "mock")
 
-	// Log warning about mock provider in production
-	if env := os.Getenv("ENV"); env == "production" {
-		log.Println("⚠️  WARNING: Using MockProvider for push notifications in production mode!")
-		log.Println("⚠️  Please implement real FCM/APNs providers before production deployment")
+	// Get Firebase credentials path from environment
+	firebaseCredentialsPath := env.GetString("FIREBASE_CREDENTIALS_PATH", "/app/secrets/firebase-adminsdk.json")
+
+	// Check if Firebase credentials file exists
+	credentialsFileExists := true
+	if _, err := os.Stat(firebaseCredentialsPath); os.IsNotExist(err) {
+		credentialsFileExists = false
 	}
+
+	switch pushProviderType {
+	case "firebase":
+		// Firebase Cloud Messaging (supports Android, iOS via APNs bridge, Web)
+		firebaseProjectID := env.GetString("FIREBASE_PROJECT_ID", "")
+		if firebaseProjectID == "" {
+			log.Println("Warning: FIREBASE_PROJECT_ID not set, falling back to mock provider")
+			pushProvider = &push.MockProvider{}
+		} else {
+			// In production, Firebase credentials must exist
+			if productionMode && !credentialsFileExists {
+				log.Fatalf("❌ FIREBASE_CREDENTIALS file not found at: %s. Required in production mode.", firebaseCredentialsPath)
+				log.Fatalf("❌ Please create Docker secret: echo 'your-firebase-credentials' | docker secret create firebase_credentials -")
+			}
+
+			pushProvider = push.NewFirebaseProvider(firebaseProjectID)
+			log.Printf("✅ Using Firebase Provider for project: %s", firebaseProjectID)
+
+			// Log if Firebase credentials are not configured
+			if os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") == "" && os.Getenv("FIREBASE_CREDENTIALS") == "" {
+				log.Println("⚠️  Warning: Neither GOOGLE_APPLICATION_CREDENTIALS nor FIREBASE_CREDENTIALS is set")
+				log.Println("⚠️  Firebase will operate in mock mode")
+			}
+		}
+	case "mock", "":
+		// Mock provider for development/testing
+		pushProvider = &push.MockProvider{}
+		log.Println("ℹ️  Using MockProvider for push notifications")
+
+		// Log warning about mock provider in production
+		if productionMode {
+			log.Println("⚠️  WARNING: Using MockProvider for push notifications in production mode!")
+			log.Println("⚠️  Please configure Firebase provider before production deployment")
+		}
+	default:
+		log.Printf("Warning: Unknown PUSH_PROVIDER '%s', falling back to mock", pushProviderType)
+		pushProvider = &push.MockProvider{}
+	}
+
+	pushSvc := push.NewService(pushProvider, pushTokenRepo)
 
 	// 5. Initialize Video Service
 	videoSvc := videoService.NewService(callRepo, conversationRepo, userRepo, pushSvc)
 
-	// 6. Initialize Handlers
+	// 6. Initialize Metrics
+	appMetrics := metrics.NewMetrics("video-service")
+	prometheusMiddleware := middleware.NewPrometheusMiddleware(appMetrics)
+
+	// 7. Initialize Handlers
 	videoHdlr := videoHandler.NewHandler(videoSvc)
 
-	// 7. Initialize WebRTC Signaling Hub
+	// 8. Initialize WebRTC Signaling Hub
 	signalingHub := wsHandler.NewSignalingHub(redisClient)
 
-	// 8. Setup Gin Router
+	// 9. Setup Gin Router
 	router := gin.New() // Don't use Default() to have full control
 
 	// Configure trusted proxies for production
@@ -131,6 +213,7 @@ func main() {
 	router.Use(middleware.Recovery())
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
+	router.Use(prometheusMiddleware.Handler())
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {
@@ -140,6 +223,9 @@ func main() {
 			"time":    time.Now().UTC(),
 		})
 	})
+
+	// Metrics endpoint (for Prometheus scraping)
+	router.GET("/metrics", middleware.MetricsHandler(appMetrics))
 
 	// Revocation checker
 	revocationChecker := middleware.NewRedisRevocationChecker(redisClient)
@@ -158,7 +244,7 @@ func main() {
 		v1.GET("/ws/signaling", signalingHub.ServeWS)
 	}
 
-	// 8. Start server
+	// 10. Start server
 	port := env.GetString("PORT", "8083")
 	addr := fmt.Sprintf(":%s", port)
 

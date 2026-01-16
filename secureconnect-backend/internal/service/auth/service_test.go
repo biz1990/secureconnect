@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"secureconnect-backend/internal/domain"
+	"secureconnect-backend/internal/repository/cockroach"
 	"secureconnect-backend/internal/repository/redis"
+	"secureconnect-backend/pkg/email"
 	"secureconnect-backend/pkg/jwt"
 )
 
@@ -38,6 +40,11 @@ func (m *MockUserRepository) GetByID(ctx context.Context, userID uuid.UUID) (*do
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*domain.User), args.Error(1)
+}
+
+func (m *MockUserRepository) Update(ctx context.Context, user *domain.User) error {
+	args := m.Called(ctx, user)
+	return args.Error(0)
 }
 
 func (m *MockUserRepository) UpdateStatus(ctx context.Context, userID uuid.UUID, status string) error {
@@ -134,11 +141,6 @@ func (m *MockSessionRepository) SetFailedLoginAttempts(ctx context.Context, key 
 	return args.Error(0)
 }
 
-func (m *MockSessionRepository) DeleteFailedLoginAttempts(ctx context.Context, key string) error {
-	args := m.Called(ctx, key)
-	return args.Error(0)
-}
-
 func (m *MockSessionRepository) GetFailedLoginAttempt(ctx context.Context, key string) (*redis.FailedLoginAttempt, error) {
 	args := m.Called(ctx, key)
 	if args.Get(0) == nil {
@@ -149,6 +151,11 @@ func (m *MockSessionRepository) GetFailedLoginAttempt(ctx context.Context, key s
 
 func (m *MockSessionRepository) SetFailedLoginAttempt(ctx context.Context, key string, attempt *redis.FailedLoginAttempt) error {
 	args := m.Called(ctx, key, attempt)
+	return args.Error(0)
+}
+
+func (m *MockSessionRepository) DeleteFailedLoginAttempts(ctx context.Context, key string) error {
+	args := m.Called(ctx, key)
 	return args.Error(0)
 }
 
@@ -166,14 +173,47 @@ func (m *MockPresenceRepository) SetUserOffline(ctx context.Context, userID uuid
 	return args.Error(0)
 }
 
+type MockEmailVerificationRepository struct {
+	mock.Mock
+}
+
+func (m *MockEmailVerificationRepository) CreateToken(ctx context.Context, userID uuid.UUID, newEmail, token string, expiresAt time.Time) error {
+	args := m.Called(ctx, userID, newEmail, token, expiresAt)
+	return args.Error(0)
+}
+
+func (m *MockEmailVerificationRepository) GetToken(ctx context.Context, token string) (*cockroach.EmailVerificationToken, error) {
+	args := m.Called(ctx, token)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*cockroach.EmailVerificationToken), args.Error(1)
+}
+
+func (m *MockEmailVerificationRepository) MarkTokenUsed(ctx context.Context, token string) error {
+	args := m.Called(ctx, token)
+	return args.Error(0)
+}
+
+type MockEmailService struct {
+	mock.Mock
+}
+
+func (m *MockEmailService) SendPasswordResetEmail(ctx context.Context, to string, data *email.PasswordResetEmailData) error {
+	args := m.Called(ctx, to, data)
+	return args.Error(0)
+}
+
 func TestRegister(t *testing.T) {
 	mockUserRepo := new(MockUserRepository)
 	mockDirRepo := new(MockDirectoryRepository)
 	mockSessionRepo := new(MockSessionRepository)
 	mockPresenceRepo := new(MockPresenceRepository)
+	mockEmailVerificationRepo := new(MockEmailVerificationRepository)
+	mockEmailSvc := new(MockEmailService)
 	jwtManager := jwt.NewJWTManager("secret", 15*time.Minute, 24*time.Hour)
 
-	service := NewService(mockUserRepo, mockDirRepo, mockSessionRepo, mockPresenceRepo, jwtManager)
+	service := NewService(mockUserRepo, mockDirRepo, mockSessionRepo, mockPresenceRepo, mockEmailVerificationRepo, mockEmailSvc, jwtManager)
 
 	input := &RegisterInput{
 		Email:       "test@example.com",
@@ -211,9 +251,11 @@ func TestRegister_EmailExists(t *testing.T) {
 	mockDirRepo := new(MockDirectoryRepository)
 	mockSessionRepo := new(MockSessionRepository)
 	mockPresenceRepo := new(MockPresenceRepository)
+	mockEmailVerificationRepo := new(MockEmailVerificationRepository)
+	mockEmailSvc := new(MockEmailService)
 	jwtManager := jwt.NewJWTManager("secret", 15*time.Minute, 24*time.Hour)
 
-	service := NewService(mockUserRepo, mockDirRepo, mockSessionRepo, mockPresenceRepo, jwtManager)
+	service := NewService(mockUserRepo, mockDirRepo, mockSessionRepo, mockPresenceRepo, mockEmailVerificationRepo, mockEmailSvc, jwtManager)
 
 	input := &RegisterInput{
 		Email:       "existing@example.com",
