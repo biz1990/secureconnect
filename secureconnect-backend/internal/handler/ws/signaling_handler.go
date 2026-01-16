@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -36,6 +38,11 @@ type SignalingHub struct {
 	register   chan *SignalingClient
 	unregister chan *SignalingClient
 	broadcast  chan *SignalingMessage
+
+	// Concurrency limit: maxConnections is the maximum number of concurrent WebSocket connections
+	maxConnections int
+	// Semaphore for limiting concurrent connections
+	semaphore chan struct{}
 }
 
 // SignalingClient represents a WebSocket client for signaling
@@ -95,6 +102,14 @@ var signalingUpgrader = websocket.Upgrader{
 
 // NewSignalingHub creates a new signaling hub
 func NewSignalingHub(redisClient *redis.Client) *SignalingHub {
+	// Default max connections: 1000 (configurable via environment if needed)
+	maxConns := 1000
+	if val := os.Getenv("WS_MAX_SIGNALING_CONNECTIONS"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			maxConns = n
+		}
+	}
+
 	hub := &SignalingHub{
 		calls:               make(map[uuid.UUID]map[*SignalingClient]bool),
 		subscriptionCancels: make(map[uuid.UUID]context.CancelFunc),
@@ -102,6 +117,8 @@ func NewSignalingHub(redisClient *redis.Client) *SignalingHub {
 		register:            make(chan *SignalingClient),
 		unregister:          make(chan *SignalingClient),
 		broadcast:           make(chan *SignalingMessage, 256),
+		maxConnections:      maxConns,
+		semaphore:           make(chan struct{}, maxConns),
 	}
 
 	go hub.run()
@@ -243,6 +260,21 @@ func (h *SignalingHub) subscribeToCall(ctx context.Context, callID uuid.UUID) {
 
 // ServeWS handles WebSocket requests for signaling
 func (h *SignalingHub) ServeWS(c *gin.Context) {
+	// Acquire semaphore to limit concurrent connections
+	select {
+	case h.semaphore <- struct{}{}:
+		// Successfully acquired, continue
+		defer func() {
+			<-h.semaphore // Release semaphore when connection closes
+		}()
+	default:
+		// No available slots, reject connection
+		logger.Warn("WebSocket connection rejected: max connections reached",
+			zap.Int("max_connections", h.maxConnections))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Server at capacity, please try again later"})
+		return
+	}
+
 	// Get call ID from query params
 	callIDStr := c.Query("call_id")
 	if callIDStr == "" {

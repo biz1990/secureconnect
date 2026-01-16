@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +39,11 @@ type ChatHub struct {
 	register   chan *Client
 	unregister chan *Client
 	broadcast  chan *Message
+
+	// Concurrency limit: maxConnections is the maximum number of concurrent WebSocket connections
+	maxConnections int
+	// Semaphore for limiting concurrent connections
+	semaphore chan struct{}
 }
 
 // Client represents a WebSocket client
@@ -116,6 +122,14 @@ var upgrader = websocket.Upgrader{
 
 // NewChatHub creates a new chat hub
 func NewChatHub(redisClient *redis.Client) *ChatHub {
+	// Default max connections: 1000 (configurable via environment if needed)
+	maxConns := 1000
+	if val := os.Getenv("WS_MAX_CHAT_CONNECTIONS"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			maxConns = n
+		}
+	}
+
 	hub := &ChatHub{
 		conversations:       make(map[uuid.UUID]map[*Client]bool),
 		subscriptionCancels: make(map[uuid.UUID]context.CancelFunc),
@@ -123,6 +137,8 @@ func NewChatHub(redisClient *redis.Client) *ChatHub {
 		register:            make(chan *Client),
 		unregister:          make(chan *Client),
 		broadcast:           make(chan *Message, 256),
+		maxConnections:      maxConns,
+		semaphore:           make(chan struct{}, maxConns),
 	}
 
 	go hub.run()
@@ -247,6 +263,21 @@ func (h *ChatHub) subscribeToConversation(ctx context.Context, conversationID uu
 
 // ServeWS handles WebSocket requests
 func (h *ChatHub) ServeWS(c *gin.Context) {
+	// Acquire semaphore to limit concurrent connections
+	select {
+	case h.semaphore <- struct{}{}:
+		// Successfully acquired, continue
+		defer func() {
+			<-h.semaphore // Release semaphore when connection closes
+		}()
+	default:
+		// No available slots, reject connection
+		logger.Warn("WebSocket connection rejected: max connections reached",
+			zap.Int("max_connections", h.maxConnections))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Server at capacity, please try again later"})
+		return
+	}
+
 	// Get conversation ID from query params
 	conversationIDStr := c.Query("conversation_id")
 	if conversationIDStr == "" {

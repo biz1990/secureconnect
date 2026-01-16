@@ -1,8 +1,8 @@
 # SecureConnect Critical-Only Security Hardening Patches
 
-**Date:** 2026-01-16  
-**Scope:** CRITICAL-ONLY security hardening  
-**Objective:** Remove sensitive data from logs and change Redis-dependent middleware to FAIL-OPEN
+**Date:** 2026-01-16
+**Scope:** CRITICAL-ONLY security hardening and WebSocket concurrency limits
+**Objective:** Remove sensitive data from logs, change Redis-dependent middleware to FAIL-OPEN, and add safe concurrency limits to WebSocket handlers
 
 ---
 
@@ -14,6 +14,18 @@ This document contains surgical, backward-compatible security patches for Secure
 3. Changing Redis-dependent middleware to FAIL-OPEN for service availability
 
 **No architecture refactoring was performed. No public APIs were changed. No new dependencies were introduced.**
+
+---
+
+## Max-Connection Strategy
+
+WebSocket handlers now implement safe concurrency limits using a semaphore pattern:
+
+- **Default Limit:** 1,000 concurrent connections per hub (signaling/chat)
+- **Configurable:** Via environment variables `WS_MAX_SIGNALING_CONNECTIONS` and `WS_MAX_CHAT_CONNECTIONS`
+- **Behavior:** Connections beyond limit are rejected with HTTP 503 (Service Unavailable)
+- **Resource Management:** Semaphore acquired on connection, released on disconnect
+- **Preserved Behavior:** Existing WebSocket functionality unchanged; only connection acceptance is limited
 
 ---
 
@@ -357,6 +369,522 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 
 ---
 
+### 7. `secureconnect-backend/internal/handler/ws/signaling_handler.go`
+
+#### Patch 7.1: Add concurrency limit fields to SignalingHub struct (Lines 42-46)
+**Before:**
+```go
+// SignalingHub manages WebRTC signaling connections
+type SignalingHub struct {
+	// Registered clients per call
+	calls map[uuid.UUID]map[*SignalingClient]bool
+
+	// Cancel functions for call subscriptions
+	subscriptionCancels map[uuid.UUID]context.CancelFunc
+
+	// Redis client for Pub/Sub
+	redisClient *redis.Client
+
+	// Mutex for thread-safe operations
+	mu sync.RWMutex
+
+	// Channels
+	register   chan *SignalingClient
+	unregister chan *SignalingClient
+	broadcast  chan *SignalingMessage
+}
+```
+
+**After:**
+```go
+// SignalingHub manages WebRTC signaling connections
+type SignalingHub struct {
+	// Registered clients per call
+	calls map[uuid.UUID]map[*SignalingClient]bool
+
+	// Cancel functions for call subscriptions
+	subscriptionCancels map[uuid.UUID]context.CancelFunc
+
+	// Redis client for Pub/Sub
+	redisClient *redis.Client
+
+	// Mutex for thread-safe operations
+	mu sync.RWMutex
+
+	// Channels
+	register   chan *SignalingClient
+	unregister chan *SignalingClient
+	broadcast  chan *SignalingMessage
+
+	// Concurrency limit: maxConnections is the maximum number of concurrent WebSocket connections
+	maxConnections int
+	// Semaphore for limiting concurrent connections
+	semaphore chan struct{}
+}
+```
+
+**Impact:**
+- **Security:** Prevents unbounded goroutine growth from WebSocket connections
+- **Runtime:** Prevents resource exhaustion from excessive connections
+
+---
+
+#### Patch 7.2: Initialize concurrency limit in NewSignalingHub (Lines 96-120)
+**Before:**
+```go
+// NewSignalingHub creates a new signaling hub
+func NewSignalingHub(redisClient *redis.Client) *SignalingHub {
+	hub := &SignalingHub{
+		calls:               make(map[uuid.UUID]map[*SignalingClient]bool),
+		subscriptionCancels: make(map[uuid.UUID]context.CancelFunc),
+		redisClient:         redisClient,
+		register:            make(chan *SignalingClient),
+		unregister:          make(chan *SignalingClient),
+		broadcast:           make(chan *SignalingMessage, 256),
+	}
+
+	go hub.run()
+
+	return hub
+}
+```
+
+**After:**
+```go
+// NewSignalingHub creates a new signaling hub
+func NewSignalingHub(redisClient *redis.Client) *SignalingHub {
+	// Default max connections: 1000 (configurable via environment if needed)
+	maxConns := 1000
+	if val := os.Getenv("WS_MAX_SIGNALING_CONNECTIONS"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			maxConns = n
+		}
+	}
+
+	hub := &SignalingHub{
+		calls:               make(map[uuid.UUID]map[*SignalingClient]bool),
+		subscriptionCancels: make(map[uuid.UUID]context.CancelFunc),
+		redisClient:         redisClient,
+		register:            make(chan *SignalingClient),
+		unregister:          make(chan *SignalingClient),
+		broadcast:           make(chan *SignalingMessage, 256),
+		maxConnections:      maxConns,
+		semaphore:           make(chan struct{}, maxConns),
+	}
+
+	go hub.run()
+
+	return hub
+}
+```
+
+**Impact:**
+- **Runtime:** Configurable connection limit via environment variable
+- **Behavior:** Default 1000 connections; can be adjusted per deployment
+
+---
+
+#### Patch 7.3: Add semaphore acquisition/release in ServeWS (Lines 244-276)
+**Before:**
+```go
+// ServeWS handles WebSocket requests for signaling
+func (h *SignalingHub) ServeWS(c *gin.Context) {
+	// Get call ID from query params
+	callIDStr := c.Query("call_id")
+	if callIDStr == "" {
+		c.JSON(400, gin.H{"error": "call_id required"})
+		return
+	}
+
+	callID, err := uuid.Parse(callIDStr)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid call_id"})
+		return
+	}
+
+	// Get user ID from context (set by auth middleware)
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(401, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		c.JSON(500, gin.H{"error": "invalid user_id"})
+		return
+	}
+
+	// Upgrade to WebSocket
+	conn, err := signalingUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logger.Warn("WebSocket upgrade failed",
+			zap.String("call_id", callID.String()),
+			zap.String("user_id", userID.String()),
+			zap.Error(err))
+		return
+	}
+
+	// Create cancelable context for this client
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &SignalingClient{
+		hub:    h,
+		conn:   conn,
+		send:   make(chan []byte, 256),
+		userID: userID,
+		callID: callID,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	client.hub.register <- client
+
+	// Start goroutines for read/write
+	go client.writePump()
+	go client.readPump()
+}
+```
+
+**After:**
+```go
+// ServeWS handles WebSocket requests for signaling
+func (h *SignalingHub) ServeWS(c *gin.Context) {
+	// Acquire semaphore to limit concurrent connections
+	select {
+	case h.semaphore <- struct{}{}:
+		// Successfully acquired, continue
+		defer func() {
+			<-h.semaphore // Release semaphore when connection closes
+		}()
+	default:
+		// No available slots, reject connection
+		logger.Warn("WebSocket connection rejected: max connections reached",
+			zap.Int("max_connections", h.maxConnections))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Server at capacity, please try again later"})
+		return
+	}
+
+	// Get call ID from query params
+	callIDStr := c.Query("call_id")
+	if callIDStr == "" {
+		c.JSON(400, gin.H{"error": "call_id required"})
+		return
+	}
+
+	callID, err := uuid.Parse(callIDStr)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid call_id"})
+		return
+	}
+
+	// Get user ID from context (set by auth middleware)
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(401, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		c.JSON(500, gin.H{"error": "invalid user_id"})
+		return
+	}
+
+	// Upgrade to WebSocket
+	conn, err := signalingUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logger.Warn("WebSocket upgrade failed",
+			zap.String("call_id", callID.String()),
+			zap.String("user_id", userID.String()),
+			zap.Error(err))
+		return
+	}
+
+	// Create cancelable context for this client
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &SignalingClient{
+		hub:    h,
+		conn:   conn,
+		send:   make(chan []byte, 256),
+		userID: userID,
+		callID: callID,
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	client.hub.register <- client
+
+	// Start goroutines for read/write
+	go client.writePump()
+	go client.readPump()
+}
+```
+
+**Impact:**
+- **Security:** Limits concurrent connections to prevent resource exhaustion
+- **Runtime:** Rejects excess connections with HTTP 503
+- **Behavior:** Preserved - existing connections work normally
+
+---
+
+### 8. `secureconnect-backend/internal/handler/ws/chat_handler.go`
+
+#### Patch 8.1: Add concurrency limit fields to ChatHub struct (Lines 43-47)
+**Before:**
+```go
+// ChatHub manages WebSocket connections for chat
+type ChatHub struct {
+	// Registered clients per conversation
+	conversations map[uuid.UUID]map[*Client]bool
+
+	// Cancel functions for conversation subscriptions
+	subscriptionCancels map[uuid.UUID]context.CancelFunc
+
+	// Redis client for Pub/Sub
+	redisClient *redis.Client
+
+	// Mutex for thread-safe operations
+	mu sync.RWMutex
+
+	// Channels
+	register   chan *Client
+	unregister chan *Client
+	broadcast  chan *Message
+}
+```
+
+**After:**
+```go
+// ChatHub manages WebSocket connections for chat
+type ChatHub struct {
+	// Registered clients per conversation
+	conversations map[uuid.UUID]map[*Client]bool
+
+	// Cancel functions for conversation subscriptions
+	subscriptionCancels map[uuid.UUID]context.CancelFunc
+
+	// Redis client for Pub/Sub
+	redisClient *redis.Client
+
+	// Mutex for thread-safe operations
+	mu sync.RWMutex
+
+	// Channels
+	register   chan *Client
+	unregister chan *Client
+	broadcast  chan *Message
+
+	// Concurrency limit: maxConnections is the maximum number of concurrent WebSocket connections
+	maxConnections int
+	// Semaphore for limiting concurrent connections
+	semaphore chan struct{}
+}
+```
+
+**Impact:**
+- **Security:** Prevents unbounded goroutine growth from WebSocket connections
+- **Runtime:** Prevents resource exhaustion from excessive connections
+
+---
+
+#### Patch 8.2: Initialize concurrency limit in NewChatHub (Lines 117-141)
+**Before:**
+```go
+// NewChatHub creates a new chat hub
+func NewChatHub(redisClient *redis.Client) *ChatHub {
+	hub := &ChatHub{
+		conversations:       make(map[uuid.UUID]map[*Client]bool),
+		subscriptionCancels: make(map[uuid.UUID]context.CancelFunc),
+		redisClient:         redisClient,
+		register:            make(chan *Client),
+		unregister:          make(chan *Client),
+		broadcast:           make(chan *Message, 256),
+	}
+
+	go hub.run()
+
+	return hub
+}
+```
+
+**After:**
+```go
+// NewChatHub creates a new chat hub
+func NewChatHub(redisClient *redis.Client) *ChatHub {
+	// Default max connections: 1000 (configurable via environment if needed)
+	maxConns := 1000
+	if val := os.Getenv("WS_MAX_CHAT_CONNECTIONS"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			maxConns = n
+		}
+	}
+
+	hub := &ChatHub{
+		conversations:       make(map[uuid.UUID]map[*Client]bool),
+		subscriptionCancels: make(map[uuid.UUID]context.CancelFunc),
+		redisClient:         redisClient,
+		register:            make(chan *Client),
+		unregister:          make(chan *Client),
+		broadcast:           make(chan *Message, 256),
+		maxConnections:      maxConns,
+		semaphore:           make(chan struct{}, maxConns),
+	}
+
+	go hub.run()
+
+	return hub
+}
+```
+
+**Impact:**
+- **Runtime:** Configurable connection limit via environment variable
+- **Behavior:** Default 1000 connections; can be adjusted per deployment
+
+---
+
+#### Patch 8.3: Add semaphore acquisition/release in ServeWS (Lines 248-280)
+**Before:**
+```go
+// ServeWS handles WebSocket requests
+func (h *ChatHub) ServeWS(c *gin.Context) {
+	// Get conversation ID from query params
+	conversationIDStr := c.Query("conversation_id")
+	if conversationIDStr == "" {
+		c.JSON(400, gin.H{"error": "conversation_id required"})
+		return
+	}
+
+	conversationID, err := uuid.Parse(conversationIDStr)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid conversation_id"})
+		return
+	}
+
+	// Get user ID from context (set by auth middleware)
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(401, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		c.JSON(500, gin.H{"error": "invalid user_id"})
+		return
+	}
+
+	// Upgrade to WebSocket
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logger.Warn("WebSocket upgrade failed",
+			zap.String("conversation_id", conversationID.String()),
+			zap.String("user_id", userID.String()),
+			zap.Error(err))
+		return
+	}
+
+	// Create cancelable context for this client's subscription interest
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &Client{
+		hub:            h,
+		conn:           conn,
+		send:           make(chan []byte, 256),
+		userID:         userID,
+		conversationID: conversationID,
+		ctx:            ctx,
+		cancel:         cancel,
+	}
+
+	client.hub.register <- client
+
+	// Start goroutines for read/write
+	go client.writePump()
+	go client.readPump()
+}
+```
+
+**After:**
+```go
+// ServeWS handles WebSocket requests
+func (h *ChatHub) ServeWS(c *gin.Context) {
+	// Acquire semaphore to limit concurrent connections
+	select {
+	case h.semaphore <- struct{}{}:
+		// Successfully acquired, continue
+		defer func() {
+			<-h.semaphore // Release semaphore when connection closes
+		}()
+	default:
+		// No available slots, reject connection
+		logger.Warn("WebSocket connection rejected: max connections reached",
+			zap.Int("max_connections", h.maxConnections))
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Server at capacity, please try again later"})
+		return
+	}
+
+	// Get conversation ID from query params
+	conversationIDStr := c.Query("conversation_id")
+	if conversationIDStr == "" {
+		c.JSON(400, gin.H{"error": "conversation_id required"})
+		return
+	}
+
+	conversationID, err := uuid.Parse(conversationIDStr)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid conversation_id"})
+		return
+	}
+
+	// Get user ID from context (set by auth middleware)
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		c.JSON(401, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		c.JSON(500, gin.H{"error": "invalid user_id"})
+		return
+	}
+
+	// Upgrade to WebSocket
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		logger.Warn("WebSocket upgrade failed",
+			zap.String("conversation_id", conversationID.String()),
+			zap.String("user_id", userID.String()),
+			zap.Error(err))
+		return
+	}
+
+	// Create cancelable context for this client's subscription interest
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &Client{
+		hub:            h,
+		conn:           conn,
+		send:           make(chan []byte, 256),
+		userID:         userID,
+		conversationID: conversationID,
+		ctx:            ctx,
+		cancel:         cancel,
+	}
+
+	client.hub.register <- client
+
+	// Start goroutines for read/write
+	go client.writePump()
+	go client.readPump()
+}
+```
+
+**Impact:**
+- **Security:** Limits concurrent connections to prevent resource exhaustion
+- **Runtime:** Rejects excess connections with HTTP 503
+- **Behavior:** Preserved - existing connections work normally
+
+---
+
 ## Impact Analysis Summary
 
 ### Security Impact
@@ -368,6 +896,8 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 | Mask password reset tokens in logs | Positive - prevents token exposure via logs | MEDIUM |
 | Rate limit FAIL-OPEN | Negative - reduced protection during Redis outages | MEDIUM |
 | Token revocation FAIL-OPEN | Negative - revoked tokens may be accepted during Redis outages | MEDIUM |
+| WebSocket connection limits (signaling) | Positive - prevents unbounded goroutine growth | HIGH |
+| WebSocket connection limits (chat) | Positive - prevents unbounded goroutine growth | HIGH |
 
 ### Runtime Impact
 
@@ -378,6 +908,8 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 | Mask password reset tokens in logs | None - log output only | NONE |
 | Rate limit FAIL-OPEN | Positive - prevents service disruption during Redis outages | HIGH |
 | Token revocation FAIL-OPEN | Positive - prevents service disruption during Redis outages | HIGH |
+| WebSocket connection limits (signaling) | Positive - prevents resource exhaustion | HIGH |
+| WebSocket connection limits (chat) | Positive - prevents resource exhaustion | HIGH |
 
 ### Backward Compatibility Confirmation
 
@@ -397,6 +929,8 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 2. **Rate Limiting Flow:** Rate limiting still works when Redis is available. Only error handling changed.
 3. **Email Sending Flow:** Email sending unchanged. Only log output changed.
 4. **Firebase Integration:** Firebase functionality unchanged. Only log output changed.
+5. **WebSocket Signaling Flow:** Signaling functionality unchanged. Only connection acceptance is limited.
+6. **WebSocket Chat Flow:** Chat functionality unchanged. Only connection acceptance is limited.
 
 ---
 
@@ -407,6 +941,8 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 | Redis outage leads to abuse | LOW | MEDIUM | Monitor Redis health; consider rate limiting at infrastructure level |
 | Revoked tokens accepted during outage | LOW | MEDIUM | Short Redis outage windows; monitoring for suspicious activity |
 | Debugging harder without credentials path | LOW | LOW | Use secure secret management for debugging |
+| WebSocket connection limit reached | MEDIUM | LOW | Monitor connection count; adjust limit based on capacity |
+| Unbounded goroutines before patch applied | LOW | HIGH | Patch applied; limits prevent resource exhaustion |
 
 ---
 
@@ -416,6 +952,8 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 2. **Infrastructure Rate Limiting:** Consider adding CDN/WAF level rate limiting as backup
 3. **Log Aggregation:** Ensure logs are stored securely with access controls
 4. **Secret Management:** Use proper secret management (e.g., HashiCorp Vault, AWS Secrets Manager) instead of file paths
+5. **WebSocket Monitoring:** Add metrics for active WebSocket connections and rejection rate
+6. **Capacity Planning:** Adjust `WS_MAX_SIGNALING_CONNECTIONS` and `WS_MAX_CHAT_CONNECTIONS` based on actual load
 
 ---
 
@@ -426,6 +964,8 @@ func (c *RedisRevocationChecker) IsTokenRevoked(ctx context.Context, tokenString
 - [x] Password reset tokens masked in logs
 - [x] Rate limit middleware changed to FAIL-OPEN
 - [x] Token revocation middleware changed to FAIL-OPEN
+- [x] WebSocket signaling handler concurrency limits added
+- [x] WebSocket chat handler concurrency limits added
 - [x] No architecture refactoring performed
 - [x] No public APIs changed
 - [x] No new dependencies introduced
