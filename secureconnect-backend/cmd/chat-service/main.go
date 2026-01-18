@@ -24,6 +24,9 @@ import (
 	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
 	"secureconnect-backend/pkg/metrics"
+
+	// Import internal database package for Cassandra repository
+	intdb "secureconnect-backend/internal/database"
 )
 
 func main() {
@@ -39,13 +42,10 @@ func main() {
 	jwtManager := jwt.NewJWTManager(jwtSecret, 15*time.Minute, 30*24*time.Hour)
 
 	// 2. Connect to Cassandra
-	cassandraConfig := &database.CassandraConfig{
-		Hosts:    []string{env.GetString("CASSANDRA_HOST", "localhost")},
-		Keyspace: "secureconnect_ks",
-		Timeout:  10 * time.Second,
-	}
-
-	cassandraDB, err := database.NewCassandraDB(cassandraConfig)
+	cassandraDB, err := intdb.NewCassandraDB(
+		[]string{env.GetString("CASSANDRA_HOST", "localhost")},
+		"secureconnect_ks",
+	)
 	if err != nil {
 		log.Fatalf("Failed to connect to Cassandra: %v", err)
 	}
@@ -90,12 +90,11 @@ func main() {
 	log.Println("✅ Connected to CockroachDB")
 
 	// 5. Initialize Repositories
-	messageRepo := cassandra.NewMessageRepository(cassandraDB.Session)
+	messageRepo := cassandra.NewMessageRepository(cassandraDB)
 	presenceRepo := redis.NewPresenceRepository(redisDB.Client)
 	userRepo := cockroach.NewUserRepository(cockroachDB.Pool)
 	conversationRepo := cockroach.NewConversationRepository(cockroachDB.Pool)
 	notificationRepo := cockroach.NewNotificationRepository(cockroachDB.Pool)
-
 	// 6. Initialize Services
 	redisPublisher := &chatService.RedisAdapter{Client: redisDB.Client}
 	notificationSvc := notificationService.NewService(notificationRepo)
@@ -166,7 +165,9 @@ func main() {
 		v1.POST("/presence", chatHdlr.UpdatePresence)
 
 		// WebSocket endpoint (real-time chat)
-		v1.GET("/ws/chat", chatHub.ServeWS)
+		v1.GET("/ws/chat", func(c *gin.Context) {
+			chatHub.ServeWS(c, conversationRepo)
+		})
 	}
 
 	// 11. Start server

@@ -114,15 +114,23 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
-	// Call service
+	// Extract client IP (HIGH FIX #2)
+	clientIP := c.ClientIP()
+
+	// Call service with IP
 	output, err := h.authService.Login(c.Request.Context(), &auth.LoginInput{
 		Email:    req.Email,
 		Password: req.Password,
+		IP:       clientIP, // NEW: Pass IP to service
 	})
 
 	if err != nil {
 		if err.Error() == "invalid credentials" {
 			response.Unauthorized(c, "Invalid email or password")
+			return
+		}
+		if err.Error() == "account temporarily locked due to too many failed attempts" {
+			response.Unauthorized(c, "Account temporarily locked due to too many failed attempts. Please try again later.")
 			return
 		}
 		response.InternalError(c, "Failed to login")

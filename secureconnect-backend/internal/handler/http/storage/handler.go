@@ -1,13 +1,63 @@
 package storage
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 
 	"secureconnect-backend/internal/service/storage"
+	"secureconnect-backend/pkg/constants"
 	"secureconnect-backend/pkg/response"
+	"secureconnect-backend/pkg/sanitize"
+)
+
+// Metrics for storage service validation
+var (
+	storageUploadRejectedSizeExceeded = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "storage_upload_rejected_size_exceeded_total",
+		Help: "Total number of upload requests rejected due to file size exceeding limit",
+	})
+
+	storageUploadRejectedInvalidMIME = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "storage_upload_rejected_invalid_mime_total",
+		Help: "Total number of upload requests rejected due to invalid MIME type",
+	})
+
+	storageUploadRejectedInvalidFilename = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "storage_upload_rejected_invalid_filename_total",
+		Help: "Total number of upload requests rejected due to invalid filename",
+	})
+
+	storageUploadSizeBytes = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "storage_upload_size_bytes",
+		Help:    "Histogram of uploaded file sizes in bytes",
+		Buckets: []float64{1024, 10240, 102400, 1048576, 10485760, 52428800}, // 1KB, 10KB, 100KB, 1MB, 10MB, 50MB
+	})
+
+	storageUploadByMIMEType = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "storage_upload_by_mime_type_total",
+		Help: "Total number of uploads by MIME type",
+	}, []string{"mime_type"})
+
+	storageCleanupExpiredUploadsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "storage_cleanup_expired_uploads_total",
+		Help: "Total number of expired uploads cleaned up",
+	})
+
+	storageCleanupFailedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "storage_cleanup_failed_total",
+		Help: "Total number of cleanup operations that failed",
+	})
+
+	storageCleanupDurationSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "storage_cleanup_duration_seconds",
+		Help:    "Duration of cleanup operations",
+		Buckets: []float64{0.1, 0.5, 1, 5, 10, 30},
+	})
 )
 
 // Handler handles storage HTTP requests
@@ -39,6 +89,40 @@ func (h *Handler) GenerateUploadURL(c *gin.Context) {
 		return
 	}
 
+	// VALIDATION #1: File size validation - enforce MaxAttachmentSize
+	if req.FileSize > constants.MaxAttachmentSize {
+		storageUploadRejectedSizeExceeded.Inc()
+		response.ValidationError(c, fmt.Sprintf("File size exceeds maximum allowed size of %d MB", constants.MaxAttachmentSize/(1024*1024)))
+		return
+	}
+
+	// Record upload size in histogram
+	storageUploadSizeBytes.Observe(float64(req.FileSize))
+
+	// VALIDATION #2: MIME type validation - enforce allowlist
+	if !constants.AllowedMIMETypes[req.ContentType] {
+		storageUploadRejectedInvalidMIME.Inc()
+		response.ValidationError(c, "Invalid content type: "+req.ContentType)
+		return
+	}
+
+	// Record upload by MIME type
+	storageUploadByMIMEType.WithLabelValues(req.ContentType).Inc()
+
+	// VALIDATION #3: File name sanitization - prevent path traversal
+	sanitizedFileName := sanitize.SanitizeFilename(req.FileName)
+	if sanitizedFileName == "" {
+		storageUploadRejectedInvalidFilename.Inc()
+		response.ValidationError(c, "Invalid file name: file name cannot be empty after sanitization")
+		return
+	}
+	// Additional check to ensure no path traversal characters remain
+	if containsPathTraversal(sanitizedFileName) {
+		storageUploadRejectedInvalidFilename.Inc()
+		response.ValidationError(c, "Invalid file name: contains path traversal characters")
+		return
+	}
+
 	// Get user ID from context
 	userIDVal, exists := c.Get("user_id")
 	if !exists {
@@ -52,9 +136,9 @@ func (h *Handler) GenerateUploadURL(c *gin.Context) {
 		return
 	}
 
-	// Call service
+	// Call service with sanitized filename
 	output, err := h.storageService.GenerateUploadURL(c.Request.Context(), userID, &storage.GenerateUploadURLInput{
-		FileName:    req.FileName,
+		FileName:    sanitizedFileName,
 		FileSize:    req.FileSize,
 		ContentType: req.ContentType,
 		IsEncrypted: req.IsEncrypted,
@@ -66,6 +150,28 @@ func (h *Handler) GenerateUploadURL(c *gin.Context) {
 	}
 
 	response.Success(c, http.StatusOK, output)
+}
+
+// containsPathTraversal checks if a filename contains path traversal patterns
+func containsPathTraversal(filename string) bool {
+	// Check for common path traversal patterns
+	traversalPatterns := []string{"../", "./", "..\\", ".\\", "..", "\\", "/"}
+	for _, pattern := range traversalPatterns {
+		if pattern == ".." {
+			// Only reject standalone ".." at the end of the filename
+			if filename == ".." || filename == "../" || filename == "..\\" {
+				return true
+			}
+			continue
+		}
+		if len(filename) >= len(pattern) && filename[:len(pattern)] == pattern {
+			return true
+		}
+		if len(filename) >= len(pattern) && filename[len(filename)-len(pattern):] == pattern {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateDownloadURL creates presigned download URL

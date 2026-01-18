@@ -17,8 +17,10 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"secureconnect-backend/internal/repository/cockroach"
 	"secureconnect-backend/pkg/constants"
 	"secureconnect-backend/pkg/logger"
+	"secureconnect-backend/pkg/metrics"
 )
 
 // ChatHub manages WebSocket connections for chat
@@ -136,7 +138,7 @@ func NewChatHub(redisClient *redis.Client) *ChatHub {
 		redisClient:         redisClient,
 		register:            make(chan *Client),
 		unregister:          make(chan *Client),
-		broadcast:           make(chan *Message, 256),
+		broadcast:           make(chan *Message, 1000), // MEDIUM FIX #2: Increased from 256 to 1000
 		maxConnections:      maxConns,
 		semaphore:           make(chan struct{}, maxConns),
 	}
@@ -204,18 +206,32 @@ func (h *ChatHub) run() {
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
+			var clientsToRemove []*Client
 			if clients, ok := h.conversations[message.ConversationID]; ok {
 				messageJSON, _ := json.Marshal(message)
 				for client := range clients {
 					select {
 					case client.send <- messageJSON:
 					default:
-						close(client.send)
-						delete(clients, client)
+						// Mark for removal instead of deleting now
+						clientsToRemove = append(clientsToRemove, client)
 					}
 				}
 			}
 			h.mu.RUnlock()
+
+			// Remove clients outside of read lock
+			if len(clientsToRemove) > 0 {
+				h.mu.Lock()
+				if clients, ok := h.conversations[message.ConversationID]; ok {
+					for _, client := range clientsToRemove {
+						if _, exists := clients[client]; exists {
+							delete(clients, client)
+						}
+					}
+				}
+				h.mu.Unlock()
+			}
 		}
 	}
 }
@@ -262,7 +278,7 @@ func (h *ChatHub) subscribeToConversation(ctx context.Context, conversationID uu
 }
 
 // ServeWS handles WebSocket requests
-func (h *ChatHub) ServeWS(c *gin.Context) {
+func (h *ChatHub) ServeWS(c *gin.Context, conversationRepo *cockroach.ConversationRepository) {
 	// Acquire semaphore to limit concurrent connections
 	select {
 	case h.semaphore <- struct{}{}:
@@ -304,6 +320,18 @@ func (h *ChatHub) ServeWS(c *gin.Context) {
 		return
 	}
 
+	// CRITICAL FIX #2: Validate user is a participant in the conversation
+	isParticipant, err := conversationRepo.IsParticipant(c.Request.Context(), conversationID, userID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "failed to verify conversation membership"})
+		return
+	}
+	if !isParticipant {
+		metrics.ChatWebSocketConnectionUnauthorizedTotal.Inc()
+		c.JSON(403, gin.H{"error": "unauthorized: not a participant in this conversation"})
+		return
+	}
+
 	// Upgrade to WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -319,7 +347,7 @@ func (h *ChatHub) ServeWS(c *gin.Context) {
 	client := &Client{
 		hub:            h,
 		conn:           conn,
-		send:           make(chan []byte, 256),
+		send:           make(chan []byte, 1000), // MEDIUM FIX #4: Increased from 256 to 1000
 		userID:         userID,
 		conversationID: conversationID,
 		ctx:            ctx,

@@ -19,6 +19,7 @@ import (
 	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
 	"secureconnect-backend/pkg/logger"
+	"secureconnect-backend/pkg/metrics"
 )
 
 // UserRepository interface
@@ -214,6 +215,7 @@ func (s *Service) Register(ctx context.Context, input *RegisterInput) (*Register
 type LoginInput struct {
 	Email    string
 	Password string
+	IP       string // Client IP address for security tracking
 }
 
 // LoginOutput contains login result
@@ -225,19 +227,45 @@ type LoginOutput struct {
 
 // Login authenticates a user
 func (s *Service) Login(ctx context.Context, input *LoginInput) (*LoginOutput, error) {
+	// 0. Check if account is locked (CRITICAL FIX #1)
+	locked, err := s.checkAccountLocked(ctx, input.Email)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check account status: %w", err)
+	}
+	if locked {
+		metrics.AuthAccountLockedTotal.Inc()
+		return nil, fmt.Errorf("account temporarily locked due to too many failed attempts")
+	}
+
 	// 1. Get user by email
 	user, err := s.userRepo.GetByEmail(ctx, input.Email)
 	if err != nil {
+		// Record failed login attempt (CRITICAL FIX #1)
+		_ = s.recordFailedLogin(ctx, input.Email, input.IP, uuid.Nil)
+		metrics.AuthLoginFailedTotal.Inc()
+		metrics.AuthLoginFailedByIP.WithLabelValues(input.IP).Inc()
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
 	// 2. Compare password
 	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password))
 	if err != nil {
+		// Record failed login attempt (CRITICAL FIX #1)
+		_ = s.recordFailedLogin(ctx, input.Email, input.IP, user.UserID)
+		metrics.AuthLoginFailedTotal.Inc()
+		metrics.AuthLoginFailedByIP.WithLabelValues(input.IP).Inc()
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
-	// 3. Generate tokens
+	// 3. Clear failed login attempts on success (CRITICAL FIX #1)
+	if err := s.clearFailedLoginAttempts(ctx, input.Email); err != nil {
+		// Log but don't fail - login succeeded
+		logger.Warn("Failed to clear failed login attempts",
+			zap.String("email", input.Email),
+			zap.Error(err))
+	}
+
+	// 4. Generate tokens
 	accessToken, err := s.jwtManager.GenerateAccessToken(user.UserID, user.Email, user.Username, "user")
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
@@ -248,7 +276,7 @@ func (s *Service) Login(ctx context.Context, input *LoginInput) (*LoginOutput, e
 		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
 	}
 
-	// 4. Store session
+	// 5. Store session
 	session := &redis.Session{
 		SessionID:    uuid.New().String(),
 		UserID:       user.UserID,
@@ -262,7 +290,7 @@ func (s *Service) Login(ctx context.Context, input *LoginInput) (*LoginOutput, e
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
-	// 5. Update user status to online
+	// 6. Update user status to online
 	if err := s.userRepo.UpdateStatus(ctx, user.UserID, "online"); err != nil {
 		// Non-critical, log but don't fail
 		return &LoginOutput{
@@ -271,6 +299,8 @@ func (s *Service) Login(ctx context.Context, input *LoginInput) (*LoginOutput, e
 			RefreshToken: refreshToken,
 		}, nil
 	}
+
+	metrics.AuthLoginSuccessTotal.Inc()
 
 	return &LoginOutput{
 		User:         user.ToResponse(),
@@ -295,16 +325,32 @@ func (s *Service) RefreshToken(ctx context.Context, input *RefreshTokenInput) (*
 	// 1. Validate refresh token
 	claims, err := s.jwtManager.ValidateToken(input.RefreshToken)
 	if err != nil {
+		metrics.AuthRefreshTokenInvalidTotal.Inc()
 		return nil, fmt.Errorf("invalid refresh token")
 	}
 
 	// 2. Get user to ensure they still exist
 	user, err := s.userRepo.GetByID(ctx, claims.UserID)
 	if err != nil {
+		metrics.AuthRefreshTokenInvalidTotal.Inc()
 		return nil, fmt.Errorf("user not found")
 	}
 
-	// 3. Generate new tokens
+	// 3. Blacklist old refresh token (HIGH FIX #1)
+	if claims.ID != "" {
+		expiresIn := time.Until(claims.ExpiresAt.Time)
+		if expiresIn > 0 {
+			if err := s.sessionRepo.BlacklistToken(ctx, claims.ID, expiresIn); err != nil {
+				logger.Warn("Failed to blacklist old refresh token",
+					zap.String("jti", claims.ID),
+					zap.Error(err))
+			} else {
+				metrics.AuthRefreshTokenBlacklistedTotal.Inc()
+			}
+		}
+	}
+
+	// 4. Generate new tokens
 	accessToken, err := s.jwtManager.GenerateAccessToken(user.UserID, user.Email, user.Username, "user")
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
@@ -314,6 +360,8 @@ func (s *Service) RefreshToken(ctx context.Context, input *RefreshTokenInput) (*
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
 	}
+
+	metrics.AuthRefreshTokenSuccessTotal.Inc()
 
 	return &RefreshTokenOutput{
 		AccessToken:  accessToken,
@@ -332,12 +380,30 @@ func (s *Service) Logout(ctx context.Context, sessionID string, userID uuid.UUID
 		return fmt.Errorf("unauthorized: session does not belong to user")
 	}
 
-	// 2. Delete session
+	// 2. Blacklist refresh token (MEDIUM FIX #1)
+	if session.RefreshToken != "" {
+		refreshClaims, err := s.jwtManager.ValidateToken(session.RefreshToken)
+		if err == nil && refreshClaims.ID != "" {
+			expiresIn := time.Until(refreshClaims.ExpiresAt.Time)
+			if expiresIn > 0 {
+				if err := s.sessionRepo.BlacklistToken(ctx, refreshClaims.ID, expiresIn); err != nil {
+					logger.Warn("Failed to blacklist refresh token during logout",
+						zap.String("user_id", userID.String()),
+						zap.String("jti", refreshClaims.ID),
+						zap.Error(err))
+				} else {
+					metrics.AuthRefreshTokenBlacklistedTotal.Inc()
+				}
+			}
+		}
+	}
+
+	// 3. Delete session
 	if err := s.sessionRepo.DeleteSession(ctx, sessionID, userID); err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 
-	// 3. Update user status to offline in CockroachDB
+	// 4. Update user status to offline in CockroachDB
 	if err := s.userRepo.UpdateStatus(ctx, userID, "offline"); err != nil {
 		// Log but don't fail - session is already deleted
 		logger.Warn("Failed to update user status during logout",
@@ -345,7 +411,7 @@ func (s *Service) Logout(ctx context.Context, sessionID string, userID uuid.UUID
 			zap.Error(err))
 	}
 
-	// 4. Remove from presence in Redis
+	// 5. Remove from presence in Redis
 	if err := s.presenceRepo.SetUserOffline(ctx, userID); err != nil {
 		// Log but don't fail - session is already deleted
 		logger.Warn("Failed to update user presence during logout",
@@ -353,7 +419,7 @@ func (s *Service) Logout(ctx context.Context, sessionID string, userID uuid.UUID
 			zap.Error(err))
 	}
 
-	// 5. Extract JTI and blacklist token
+	// 6. Extract JTI and blacklist token
 	// We parse unverified because we trust the source (AuthMiddleware already validated signature)
 	// or even if we don't, we just want to block THIS string.
 	// However, extracting claims is safer.
@@ -368,9 +434,13 @@ func (s *Service) Logout(ctx context.Context, sessionID string, userID uuid.UUID
 					zap.String("user_id", userID.String()),
 					zap.String("jti", claims.ID),
 					zap.Error(err))
+			} else {
+				metrics.AuthTokenBlacklistedTotal.Inc()
 			}
 		}
 	}
+
+	metrics.AuthLogoutTotal.Inc()
 
 	return nil
 }

@@ -185,3 +185,43 @@ func (r *FileRepository) CheckFileAccess(ctx context.Context, fileID, userID uui
 	// For now, we'll return true if user owns the file
 	return true, nil
 }
+
+// GetExpiredUploads retrieves files stuck in "uploading" status for longer than expiry
+func (r *FileRepository) GetExpiredUploads(ctx context.Context, expiryDuration time.Duration) ([]*domain.File, error) {
+	query := `
+		SELECT file_id, user_id, file_name, file_size, content_type,
+		       minio_object_key, is_encrypted, status, created_at
+		FROM files
+		WHERE status = 'uploading'
+		AND created_at < NOW() - INTERVAL '1 second' * $1
+		ORDER BY created_at ASC
+	`
+
+	rows, err := r.pool.Query(ctx, query, int64(expiryDuration.Seconds()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get expired uploads: %w", err)
+	}
+	defer rows.Close()
+
+	var files []*domain.File
+	for rows.Next() {
+		file := &domain.File{}
+		err := rows.Scan(
+			&file.FileID,
+			&file.UserID,
+			&file.FileName,
+			&file.FileSize,
+			&file.ContentType,
+			&file.MinIOObjectKey,
+			&file.IsEncrypted,
+			&file.Status,
+			&file.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan file: %w", err)
+		}
+		files = append(files, file)
+	}
+
+	return files, nil
+}

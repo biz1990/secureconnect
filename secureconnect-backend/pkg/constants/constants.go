@@ -146,3 +146,32 @@ const (
 	// MaxAttachmentSize is the maximum allowed attachment size in bytes (50MB)
 	MaxAttachmentSize = 50 * 1024 * 1024
 )
+
+// Storage MIME type constants
+var (
+	// AllowedMIMETypes is the list of allowed MIME types for file uploads
+	AllowedMIMETypes = map[string]bool{
+		"text/plain":                   true,
+		"text/html":                    true,
+		"text/css":                     true,
+		"text/javascript":              true,
+		"application/json":             true,
+		"application/xml":              true,
+		"application/pdf":              true,
+		"image/jpeg":                   true,
+		"image/png":                    true,
+		"image/gif":                    true,
+		"image/webp":                   true,
+		"video/mp4":                    true,
+		"video/webm":                   true,
+		"audio/mpeg":                   true,
+		"audio/mp3":                    true,
+		"application/zip":              true,
+		"application/x-rar-compressed": true,
+		"application/x-tar":            true,
+		"application/x-gzip":           true,
+		"application/x-7z":             true,
+		"application/x-zip":            true,
+		"application/octet-stream":     true,
+	}
+)

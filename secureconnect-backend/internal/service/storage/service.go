@@ -8,9 +8,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
+	"go.uber.org/zap"
 
 	"secureconnect-backend/internal/domain"
 	"secureconnect-backend/pkg/constants"
+	"secureconnect-backend/pkg/logger"
 )
 
 // FileRepository interface
@@ -20,6 +22,7 @@ type FileRepository interface {
 	UpdateStatus(ctx context.Context, fileID uuid.UUID, status string) error
 	GetUserStorageUsage(ctx context.Context, userID uuid.UUID) (int64, error)
 	CheckFileAccess(ctx context.Context, fileID uuid.UUID, userID uuid.UUID) (bool, error)
+	GetExpiredUploads(ctx context.Context, expiryDuration time.Duration) ([]*domain.File, error)
 }
 
 // ObjectStorage interface
@@ -220,4 +223,47 @@ func (s *Service) GetUserQuota(ctx context.Context, userID uuid.UUID) (int64, in
 	const defaultQuota int64 = 10 * 1024 * 1024 * 1024
 
 	return used, defaultQuota, nil
+}
+
+// CleanupExpiredUploads removes files stuck in "uploading" status for longer than expiry
+// This should be called periodically (e.g., every hour) to clean up orphaned uploads
+func (s *Service) CleanupExpiredUploads(ctx context.Context) (int, error) {
+	// Use presigned URL expiry as the threshold for expired uploads
+	expiryDuration := constants.PresignedURLExpiry
+
+	// Get expired uploads
+	expiredUploads, err := s.fileRepo.GetExpiredUploads(ctx, expiryDuration)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get expired uploads: %w", err)
+	}
+
+	cleanedCount := 0
+	for _, file := range expiredUploads {
+		// Attempt to remove from MinIO (may fail if file was never uploaded)
+		err := s.storage.RemoveObject(ctx, s.bucketName, file.MinIOObjectKey, minio.RemoveObjectOptions{})
+		if err != nil {
+			logger.Warn("Failed to remove expired upload from MinIO",
+				zap.String("fileID", file.FileID.String()),
+				zap.String("objectKey", file.MinIOObjectKey),
+				zap.Error(err))
+		}
+
+		// Update status to "failed" to mark as cleaned up
+		err = s.fileRepo.UpdateStatus(ctx, file.FileID, "failed")
+		if err != nil {
+			logger.Warn("Failed to update expired upload status",
+				zap.String("fileID", file.FileID.String()),
+				zap.Error(err))
+			continue
+		}
+
+		cleanedCount++
+		logger.Info("Cleaned up expired upload",
+			zap.String("fileID", file.FileID.String()),
+			zap.String("userID", file.UserID.String()),
+			zap.String("fileName", file.FileName),
+			zap.Duration("age", time.Since(file.CreatedAt)))
+	}
+
+	return cleanedCount, nil
 }

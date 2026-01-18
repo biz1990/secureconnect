@@ -5,6 +5,9 @@
 -- ==========================================
 -- DROP EXISTING TABLES (for clean re-init)
 -- ==========================================
+DROP TABLE IF EXISTS poll_votes CASCADE;
+DROP TABLE IF EXISTS poll_options CASCADE;
+DROP TABLE IF EXISTS polls CASCADE;
 DROP TABLE IF EXISTS one_time_pre_keys CASCADE;
 DROP TABLE IF EXISTS signed_pre_keys CASCADE;
 DROP TABLE IF EXISTS identity_keys CASCADE;
@@ -203,6 +206,71 @@ CREATE TABLE email_verification_tokens (
     INDEX idx_email_verification_tokens_user_id (user_id),
     INDEX idx_email_verification_tokens_expires_at (expires_at)
 );
+
+-- ==========================================
+-- 10. POLLS TABLES
+-- ==========================================
+
+-- Polls
+CREATE TABLE polls (
+    poll_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    creator_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    question STRING NOT NULL,
+    poll_type STRING NOT NULL DEFAULT 'single',
+    allow_vote_change BOOLEAN NOT NULL DEFAULT FALSE,
+    expires_at TIMESTAMPTZ,
+    is_closed BOOLEAN NOT NULL DEFAULT FALSE,
+    closed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    INDEX idx_polls_conversation (conversation_id),
+    INDEX idx_polls_creator (creator_id),
+    INDEX idx_polls_expires_at (expires_at),
+    INDEX idx_polls_created_at (created_at DESC),
+    CONSTRAINT polls_type_check CHECK (poll_type IN ('single', 'multi'))
+);
+
+-- Poll Options
+CREATE TABLE poll_options (
+    option_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    poll_id UUID NOT NULL REFERENCES polls(poll_id) ON DELETE CASCADE,
+    option_text STRING NOT NULL,
+    display_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    INDEX idx_poll_options_poll_id (poll_id),
+    INDEX idx_poll_options_display_order (poll_id, display_order),
+    CONSTRAINT poll_options_unique_text UNIQUE (poll_id, option_text)
+);
+
+-- Poll Votes
+CREATE TABLE poll_votes (
+    vote_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    poll_id UUID NOT NULL REFERENCES polls(poll_id) ON DELETE CASCADE,
+    option_id UUID NOT NULL REFERENCES poll_options(option_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    voted_at TIMESTAMPTZ DEFAULT now(),
+    INDEX idx_poll_votes_poll_id (poll_id),
+    INDEX idx_poll_votes_user_id (user_id),
+    INDEX idx_poll_votes_option_id (option_id),
+    INDEX idx_poll_votes_poll_user (poll_id, user_id),
+    CONSTRAINT poll_votes_unique UNIQUE (poll_id, user_id, option_id)
+);
+
+-- Function to update updated_at timestamp on polls table
+CREATE OR REPLACE FUNCTION update_polls_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger to automatically update updated_at
+CREATE TRIGGER trigger_update_polls_updated_at
+    BEFORE UPDATE ON polls
+    FOR EACH ROW
+    EXECUTE FUNCTION update_polls_updated_at();
 
 -- ==========================================
 -- GRANT PERMISSIONS (if needed)

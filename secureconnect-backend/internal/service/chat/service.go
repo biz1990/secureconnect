@@ -17,8 +17,8 @@ import (
 
 // MessageRepository interface
 type MessageRepository interface {
-	Save(message *domain.Message) error
-	GetByConversation(conversationID uuid.UUID, limit int, pageState []byte) ([]*domain.Message, []byte, error)
+	Save(ctx context.Context, message *domain.Message) error
+	GetByConversation(ctx context.Context, conversationID uuid.UUID, limit int, pageState []byte) ([]*domain.Message, []byte, error)
 }
 
 // PresenceRepository interface
@@ -118,12 +118,17 @@ func (s *Service) SendMessage(ctx context.Context, input *SendMessageInput) (*Se
 	}
 
 	// Save to Cassandra
-	if err := s.messageRepo.Save(message); err != nil {
+	if err := s.messageRepo.Save(ctx, message); err != nil {
 		return nil, fmt.Errorf("failed to save message: %w", err)
 	}
 
 	// Trigger push notifications for conversation participants (non-blocking)
-	go s.notifyMessageRecipients(ctx, input.SenderID, input.ConversationID, input.Content)
+	// Create a new context with timeout for the goroutine
+	notifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	go func() {
+		defer cancel()
+		s.notifyMessageRecipients(notifyCtx, input.SenderID, input.ConversationID, input.Content)
+	}()
 
 	// Publish to Redis Pub/Sub for real-time delivery
 	channel := fmt.Sprintf("chat:%s", input.ConversationID)
@@ -177,6 +182,7 @@ type GetMessagesOutput struct {
 func (s *Service) GetMessages(ctx context.Context, input *GetMessagesInput) (*GetMessagesOutput, error) {
 	// Fetch messages from Cassandra
 	messages, nextPageState, err := s.messageRepo.GetByConversation(
+		ctx,
 		input.ConversationID,
 		input.Limit,
 		input.PageState,
@@ -223,7 +229,7 @@ func (s *Service) RefreshPresence(ctx context.Context, userID uuid.UUID) error {
 
 // notifyMessageRecipients sends push notifications to all conversation participants except sender
 // This runs in a goroutine to avoid blocking the message send operation
-func (s *Service) notifyMessageRecipients(ctx context.Context, senderID, conversationID uuid.UUID, content string) {
+func (s *Service) notifyMessageRecipients(ctx context.Context, senderID, conversationID uuid.UUID, _ string) {
 	// Get sender details for notification
 	sender, err := s.userRepo.GetByID(ctx, senderID)
 	if err != nil {

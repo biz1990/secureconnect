@@ -41,3 +41,29 @@ type MessageResponse struct {
 	Metadata       map[string]interface{} `json:"metadata,omitempty"` // AI metadata only if is_encrypted=false
 	SentAt         time.Time              `json:"sent_at"`
 }
+
+// Cassandra-related errors
+var (
+	ErrCassandraTimeout        = NewCassandraError("CASSANDRA_TIMEOUT", "Cassandra query timed out")
+	ErrCassandraUnavailable    = NewCassandraError("CASSANDRA_UNAVAILABLE", "Cassandra is temporarily unavailable")
+	ErrCassandraRetryExhausted = NewCassandraError("CASSANDRA_RETRY_EXHAUSTED", "Maximum retry attempts exhausted")
+)
+
+// CassandraError represents a Cassandra-specific error
+type CassandraError struct {
+	Code    string
+	Message string
+}
+
+// NewCassandraError creates a new Cassandra error
+func NewCassandraError(code, message string) *CassandraError {
+	return &CassandraError{
+		Code:    code,
+		Message: message,
+	}
+}
+
+// Error implements the error interface
+func (e *CassandraError) Error() string {
+	return e.Message
+}
