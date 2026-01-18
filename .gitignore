@@ -1,0 +1,50 @@
+# Secrets and credentials
+secrets/
+certs/
+*.key
+*.pem
+ca.key
+firebase*.json
+
+# Environment files
+.env.production
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+app_logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test coverage
+coverage/
+*.cover
+.coverage
+
+# Docker volumes
+crdb_data/
+cassandra_data/
+redis_data/
+minio_data/
+prometheus_data/
+grafana_data/
+loki_data/
