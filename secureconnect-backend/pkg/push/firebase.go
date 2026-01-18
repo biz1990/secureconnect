@@ -27,10 +27,14 @@ type FirebaseProvider struct {
 // NewFirebaseProvider creates a new Firebase push notification provider
 // Initializes Firebase Admin SDK using credentials from environment
 func NewFirebaseProvider(projectID string) *FirebaseProvider {
-	// Check for credentials file path
-	credentialsPath := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	// Check for credentials file path (supports Docker secrets)
+	// Priority: FIREBASE_CREDENTIALS_PATH (Docker secret) -> GOOGLE_APPLICATION_CREDENTIALS (legacy)
+	credentialsPath := os.Getenv("FIREBASE_CREDENTIALS_PATH")
 	if credentialsPath == "" {
-		log.Println("GOOGLE_APPLICATION_CREDENTIALS not set, creating mock provider")
+		credentialsPath = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+	}
+	if credentialsPath == "" {
+		log.Println("FIREBASE_CREDENTIALS_PATH not set, creating mock provider")
 		return &FirebaseProvider{
 			projectID:   projectID,
 			initialized: false,

@@ -124,8 +124,8 @@ func Load() (*Config, error) {
 		SMTP: SMTPConfig{
 			Host:     getEnv("SMTP_HOST", "smtp.gmail.com"),
 			Port:     getEnvAsInt("SMTP_PORT", 587),
-			Username: getEnv("SMTP_USERNAME", ""),
-			Password: getEnv("SMTP_PASSWORD", ""),
+			Username: getEnvOrFile("SMTP_USERNAME", ""),
+			Password: getEnvOrFile("SMTP_PASSWORD", ""),
 			From:     getEnv("SMTP_FROM", "noreply@secureconnect.com"),
 		},
 		MinIO: MinIOConfig{
@@ -184,6 +184,35 @@ func getEnv(key, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+// getEnvOrFile reads a value from environment variable or from a file path specified by <KEY>_FILE
+// This supports Docker secrets pattern where secrets are mounted as files
+// Priority: 1) <KEY>_FILE (secret file) 2) <KEY> (direct env var) 3) defaultValue
+func getEnvOrFile(key, defaultValue string) string {
+	// First check if there's a _FILE variant (Docker secret)
+	filePath := os.Getenv(key + "_FILE")
+	if filePath != "" {
+		// Read secret from file
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			// Log warning but don't fail - fall through to regular env var
+			fmt.Printf("Warning: Failed to read secret file %s: %v\n", filePath, err)
+		} else {
+			// Trim whitespace/newlines from file content
+			value := string(content)
+			// Remove trailing newline if present
+			if len(value) > 0 && value[len(value)-1] == '\n' {
+				value = value[:len(value)-1]
+			}
+			if value != "" {
+				return value
+			}
+		}
+	}
+
+	// Fall back to regular environment variable
+	return getEnv(key, defaultValue)
 }
 
 func getEnvAsInt(key string, defaultValue int) int {
