@@ -54,13 +54,16 @@ services:
     ports:
       - "26257:26257" # SQL Port
       - "8081:8080" # UI Admin
-    command: start-single-node --insecure
+    # Security: Use TLS certificates instead of --insecure
+    # Generate certs with: ./scripts/generate-certs.sh
+    command: start-single-node --certs-dir=/cockroach/certs
     environment:
       - POSTGRES_USER=root
       - POSTGRES_DB=secureconnect_poc
       - COCKROACH_MAX_OFFSET_MEMORY=2GB
     volumes:
       - crdb_data:/cockroach/cockroach-data
+      - ./certs:/cockroach/certs:ro # Mount TLS certificates
     networks:
       - secureconnect-net
     restart: always
@@ -168,6 +171,8 @@ services:
       - jwt_secret
       - minio_access_key
       - minio_secret_key
+      - smtp_username
+      - smtp_password
     environment:
       - ENV=production
       - DB_HOST=cockroachdb
@@ -180,8 +185,8 @@ services:
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
       - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
       - SMTP_PORT=${SMTP_PORT:-587}
-      - SMTP_USERNAME=${SMTP_USERNAME:-}
-      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_USERNAME_FILE=/run/secrets/smtp_username
+      - SMTP_PASSWORD_FILE=/run/secrets/smtp_password
       - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
       - APP_URL=${APP_URL:-https://secureconnect.com}
     volumes:
@@ -222,6 +227,8 @@ services:
     secrets:
       - jwt_secret
       - db_password
+      - smtp_username
+      - smtp_password
     environment:
       - ENV=production
       - DB_HOST=cockroachdb
@@ -231,8 +238,8 @@ services:
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
       - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
       - SMTP_PORT=${SMTP_PORT:-587}
-      - SMTP_USERNAME=${SMTP_USERNAME:-}
-      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_USERNAME_FILE=/run/secrets/smtp_username
+      - SMTP_PASSWORD_FILE=/run/secrets/smtp_password
       - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
       - APP_URL=${APP_URL:-https://secureconnect.com}
     volumes:
