@@ -85,7 +85,7 @@ services:
   # DATABASE: CASSANDRA (NoSQL)
   # --------------------------------------------------------------------------
   cassandra:
-    image: cassandra:latest
+    image: cassandra:4.1.4 # Pinned to stable 4.x LTS
     container_name: secureconnect_cassandra
     ports:
       - "9042:9042"
@@ -129,11 +129,12 @@ services:
       fi'
     restart: always
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      # Support both authenticated and non-authenticated Redis
+      test: [ "CMD", "sh", "-c", "redis-cli -a $$(cat /run/secrets/redis_password 2>/dev/null || echo '') ping || redis-cli ping" ]
       interval: 10s
-      timeout: 3s
-      retries: 3
-
+      timeout: 5s
+      retries: 5
+      start_period: 30s
   # --------------------------------------------------------------------------
   # STORAGE: MINIO (Object Storage)
   # --------------------------------------------------------------------------
@@ -395,7 +396,7 @@ services:
   # TURN SERVER (WebRTC NAT Traversal)
   # --------------------------------------------------------------------------
   turn-server:
-    image: coturn/coturn:latest
+    image: coturn/coturn:4.6.2-alpine # Pinned to stable release
     container_name: secureconnect_turn
     ports:
       - "3478:3478/udp" # STUN/TURN UDP
@@ -448,7 +449,7 @@ services:
   # BACKUP SCHEDULER (Automated Backups)
   # --------------------------------------------------------------------------
   backup-scheduler:
-    image: alpine:latest
+    image: alpine:3.19 # Pinned to stable release
     container_name: secureconnect_backup
     volumes:
       - ./scripts:/app/scripts:ro

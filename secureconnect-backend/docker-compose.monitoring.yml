@@ -1,5 +1,10 @@
 version: '3.8'
 
+# --- SECRETS ---
+secrets:
+  grafana_admin_password:
+    external: true
+
 # --- NETWORKS ---
 networks:
   secureconnect-net:
@@ -47,11 +52,13 @@ services:
     container_name: secureconnect_grafana
     ports:
       - "3000:3000"
+    secrets:
+      - grafana_admin_password
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_SERVER_ROOT_URL=${GRAFANA_URL:-http://localhost:3000}
       - GF_INSTALL_PLUGINS=grafana-piechart-panel
     volumes:
       - grafana_data:/var/lib/grafana
