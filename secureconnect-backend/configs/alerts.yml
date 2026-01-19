@@ -1,0 +1,151 @@
+groups:
+  - name: secureconnect-critical
+    interval: 30s
+    rules:
+      # =======================================================================
+      # SERVICE HEALTH ALERTS
+      # =======================================================================
+      
+      - alert: ServiceDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "{{ $labels.instance }} has been unreachable for 5+ minutes"
+          
+      # =======================================================================
+      # ERROR RATE ALERTS
+      # =======================================================================
+      
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "High error rate on {{ $labels.job }}"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+          
+      # =======================================================================
+      # DATABASE ALERTS
+      # =======================================================================
+      
+      - alert: DatabasePoolExhaustion
+        expr: |
+          (db_connections_active / db_connections_max) > 0.9
+        for: 5m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool near exhaustion"
+          description: "{{ $labels.instance }} using {{ $value | humanizePercentage }} of connection pool"
+          
+      - alert: CockroachDBDown
+        expr: up{job="cockroachdb"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "CockroachDB is down"
+          description: "CockroachDB instance {{ $labels.instance }} is unreachable"
+          
+      - alert: CassandraDown
+        expr: up{job="cassandra"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Cassandra is down"
+          description: "Cassandra instance {{ $labels.instance }} is unreachable"
+          
+      # =======================================================================
+      # REDIS ALERTS
+      # =======================================================================
+      
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis is down"
+          description: "Redis on {{ $labels.instance }} is unreachable - falling back to in-memory cache"
+          
+      - alert: RedisMemoryHigh
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis memory usage high on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizePercentage }}"
+          
+      # =======================================================================
+      # SYSTEM RESOURCE ALERTS
+      # =======================================================================
+      
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizePercentage }}"
+          
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value }}% (threshold: 80%)"
+          
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "Disk space low on {{ $labels.instance }}"
+          description: "Only {{ $value | humanizePercentage }} disk space remaining"
+          
+      # =======================================================================
+      # MINIO / STORAGE ALERTS
+      # =======================================================================
+      
+      - alert: MinIODown
+        expr: up{job="minio"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "MinIO object storage is down"
+          description: "MinIO on {{ $labels.instance }} is unreachable"
+          
+      - alert: MinIOStorageHigh
+        expr: minio_cluster_disk_used_bytes / minio_cluster_disk_total_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          component: storage
+        annotations:
+          summary: "MinIO storage usage high"
+          description: "Storage usage is {{ $value | humanizePercentage }}"

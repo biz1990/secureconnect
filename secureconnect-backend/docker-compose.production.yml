@@ -22,6 +22,10 @@ secrets:
     external: true
   firebase_credentials:
     external: true
+  turn_user:
+    external: true
+  turn_password:
+    external: true
 
 # =============================================================================
 # NETWORKS
@@ -39,6 +43,9 @@ volumes:
   redis_data:
   minio_data:
   app_logs:
+  backup_data:
+  prometheus_data:
+  grafana_data:
 
     # =============================================================================
     # SERVICES
@@ -346,6 +353,119 @@ services:
       start_period: 10s
 
   # --------------------------------------------------------------------------
+  # STORAGE SERVICE
+  # --------------------------------------------------------------------------
+  storage-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: storage-service
+        CMD: ./cmd/storage-service
+    container_name: storage-service
+    secrets:
+      - jwt_secret
+      - minio_access_key
+      - minio_secret_key
+    environment:
+      - ENV=production
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
+      - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - secureconnect-net
+    mem_limit: 256m
+    cpus: '0.5'
+    restart: on-failure
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8084/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # TURN SERVER (WebRTC NAT Traversal)
+  # --------------------------------------------------------------------------
+  turn-server:
+    image: coturn/coturn:latest
+    container_name: secureconnect_turn
+    ports:
+      - "3478:3478/udp" # STUN/TURN UDP
+      - "3478:3478/tcp" # STUN/TURN TCP
+      - "5349:5349/tcp" # TURN TLS
+      - "49152-65535:49152-65535/udp" # Relay ports
+    secrets:
+      - turn_user
+      - turn_password
+    volumes:
+      - ./configs/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: >
+      sh -c 'turnserver -c /etc/coturn/turnserver.conf
+        --user=$$(cat /run/secrets/turn_user):$$(cat /run/secrets/turn_password)
+        --realm=secureconnect
+        --verbose'
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "turnutils_uclient", "-u", "test", "-w", "test", "127.0.0.1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # ALERTMANAGER (Prometheus Alerting)
+  # --------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: secureconnect_alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./configs/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:9093/-/healthy" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # --------------------------------------------------------------------------
+  # BACKUP SCHEDULER (Automated Backups)
+  # --------------------------------------------------------------------------
+  backup-scheduler:
+    image: alpine:latest
+    container_name: secureconnect_backup
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - backup_data:/backups
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - BACKUP_RETENTION_DAYS=7
+      - BACKUP_SCHEDULE=0 2 * * *
+    command: >
+      sh -c 'apk add --no-cache docker-cli bash &&
+             echo "$$BACKUP_SCHEDULE /app/scripts/backup-databases.sh /backups >> /var/log/backup.log 2>&1" | crontab - &&
+             crond -f -l 2'
+    networks:
+      - secureconnect-net
+    restart: always
+
+  # --------------------------------------------------------------------------
   # LOAD BALANCER (NGINX)
   # --------------------------------------------------------------------------
   gateway:
@@ -367,8 +487,8 @@ services:
         condition: service_healthy
       storage-service:
         condition: service_healthy
-      networks:
-        - secureconnect-net
+    networks:
+      - secureconnect-net
     restart: always
     healthcheck:
       test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health" ]
