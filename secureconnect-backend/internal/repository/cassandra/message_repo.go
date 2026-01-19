@@ -53,20 +53,34 @@ func (r *MessageRepository) Save(ctx context.Context, message *domain.Message) e
 	// Handle metadata - convert to map[string]string for Cassandra MAP<TEXT, TEXT>
 	metadataMap := make(map[string]string)
 	if message.Metadata != nil {
+		const MaxMetadataKeyLen = 100
+		const MaxMetadataValueLen = 1000
+
 		for k, v := range message.Metadata {
+			// Defense in depth: validate lengths
+			if len(k) > MaxMetadataKeyLen {
+				return fmt.Errorf("metadata key too long: %s", k)
+			}
+
+			var strVal string
 			// Convert value to string
 			switch val := v.(type) {
 			case string:
-				metadataMap[k] = val
+				strVal = val
 			case int, int8, int16, int32, int64:
-				metadataMap[k] = fmt.Sprintf("%d", val)
+				strVal = fmt.Sprintf("%d", val)
 			case float32, float64:
-				metadataMap[k] = fmt.Sprintf("%f", val)
+				strVal = fmt.Sprintf("%f", val)
 			case bool:
-				metadataMap[k] = fmt.Sprintf("%t", val)
+				strVal = fmt.Sprintf("%t", val)
 			default:
-				metadataMap[k] = fmt.Sprintf("%v", val)
+				strVal = fmt.Sprintf("%v", val)
 			}
+
+			if len(strVal) > MaxMetadataValueLen {
+				return fmt.Errorf("metadata value too long for key %s", k)
+			}
+			metadataMap[k] = strVal
 		}
 	} else {
 		// Use empty map if metadata is nil

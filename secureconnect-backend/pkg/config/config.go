@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -198,7 +199,7 @@ func getEnvOrFile(key, defaultValue string) string {
 		content, err := os.ReadFile(filePath)
 		if err != nil {
 			// Log warning but don't fail - fall through to regular env var
-			fmt.Printf("Warning: Failed to read secret file %s: %v\n", filePath, err)
+			log.Printf("Warning: Failed to read secret file %s: %v\n", filePath, err)
 		} else {
 			// Trim all whitespace (handles CRLF, LF, spaces, tabs)
 			value := strings.TrimSpace(string(content))

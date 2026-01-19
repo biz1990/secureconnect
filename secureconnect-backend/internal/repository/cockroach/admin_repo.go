@@ -100,11 +100,24 @@ func (r *AdminRepository) GetUsers(ctx context.Context, req *domain.UserListRequ
 		argCount++
 	}
 
-	// Add sorting
-	sortBy := "created_at"
-	if req.SortBy != "" {
-		sortBy = req.SortBy
+	// Add sorting with whitelist validation
+	validSortColumns := map[string]bool{
+		"created_at":    true,
+		"email":         true,
+		"username":      true,
+		"status":        true,
+		"last_login_at": true,
 	}
+
+	sortBy := "created_at"
+	if req.SortBy != "" && validSortColumns[req.SortBy] {
+		sortBy = req.SortBy
+	} else if req.SortBy != "" {
+		// Log invalid sort column attempt but fall back to default
+		// This prevents SQL injection even if parameterization fails (defense in depth)
+		return nil, fmt.Errorf("invalid sort column: %s", req.SortBy)
+	}
+
 	sortOrder := "DESC"
 	if req.SortOrder == "ASC" {
 		sortOrder = "ASC"
