@@ -67,6 +67,7 @@ type Service struct {
 	notificationService NotificationService
 	conversationRepo    ConversationRepository
 	userRepo            UserRepository
+	notificationSem     chan struct{} // Semaphore for rate limiting notifications
 }
 
 // NewService creates a new chat service
@@ -85,6 +86,7 @@ func NewService(
 		notificationService: notificationService,
 		conversationRepo:    conversationRepo,
 		userRepo:            userRepo,
+		notificationSem:     make(chan struct{}, 100), // Limit to 100 concurrent notification routines
 	}
 }
 
@@ -127,7 +129,17 @@ func (s *Service) SendMessage(ctx context.Context, input *SendMessageInput) (*Se
 	notifyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	go func() {
 		defer cancel()
-		s.notifyMessageRecipients(notifyCtx, input.SenderID, input.ConversationID, input.Content)
+
+		// Acquire semaphore
+		select {
+		case s.notificationSem <- struct{}{}:
+			defer func() { <-s.notificationSem }() // Release
+			s.notifyMessageRecipients(notifyCtx, input.SenderID, input.ConversationID, input.Content)
+		default:
+			// If semaphore full, log warning and skip notification to preserve system stability
+			logger.Warn("Notification queue full, skipping push notification",
+				zap.String("conversation_id", input.ConversationID.String()))
+		}
 	}()
 
 	// Publish to Redis Pub/Sub for real-time delivery

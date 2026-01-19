@@ -130,6 +130,12 @@ func (s *Service) InitiateCall(ctx context.Context, input *InitiateCallInput) (*
 		}
 	}
 
+	// HOTFIX: Enforce participant limit for Mesh topology
+	// P2P Mesh degrades significantly > 4 users.
+	if len(input.CalleeIDs)+1 > 4 {
+		return nil, fmt.Errorf("call capacity limit reached (max 4 participants)")
+	}
+
 	// TODO: Initialize SFU room
 
 	return &InitiateCallOutput{
@@ -213,6 +219,24 @@ func (s *Service) JoinCall(ctx context.Context, callID uuid.UUID, userID uuid.UU
 	// Check if call is still active
 	if call.Status == constants.CallStatusEnded {
 		return fmt.Errorf("call has ended")
+	}
+
+	// HOTFIX: Enforce participant limit for Mesh topology
+	participants, err := s.callRepo.GetParticipants(ctx, callID)
+	if err != nil {
+		return fmt.Errorf("failed to get participants: %w", err)
+	}
+
+	// Count active participants
+	activeCount := 0
+	for _, p := range participants {
+		if p.LeftAt == nil {
+			activeCount++
+		}
+	}
+
+	if activeCount >= 4 {
+		return fmt.Errorf("call is at full capacity (max 4 participants)")
 	}
 
 	// Verify user is a participant in the conversation
