@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -199,12 +200,8 @@ func getEnvOrFile(key, defaultValue string) string {
 			// Log warning but don't fail - fall through to regular env var
 			fmt.Printf("Warning: Failed to read secret file %s: %v\n", filePath, err)
 		} else {
-			// Trim whitespace/newlines from file content
-			value := string(content)
-			// Remove trailing newline if present
-			if len(value) > 0 && value[len(value)-1] == '\n' {
-				value = value[:len(value)-1]
-			}
+			// Trim all whitespace (handles CRLF, LF, spaces, tabs)
+			value := strings.TrimSpace(string(content))
 			if value != "" {
 				return value
 			}

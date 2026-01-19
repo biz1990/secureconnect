@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -131,6 +132,10 @@ var (
 	})
 )
 
+// requestInFlightCount tracks in-flight requests atomically
+// This allows us to both update the Prometheus gauge AND read the value
+var requestInFlightCount int64
+
 // RecordCassandraQueryTimeout records a Cassandra query timeout
 func RecordCassandraQueryTimeout(operation, table string) {
 	CassandraQueryTimeoutTotal.WithLabelValues(operation, table).Inc()
@@ -220,16 +225,18 @@ func RecordRequestDuration(duration time.Duration, method, path, status string) 
 // RecordRequestStart records the start of a request
 func RecordRequestStart() {
 	RequestInFlight.Inc()
+	atomic.AddInt64(&requestInFlightCount, 1)
 }
 
 // RecordRequestEnd records the end of a request
 func RecordRequestEnd() {
 	RequestInFlight.Dec()
+	atomic.AddInt64(&requestInFlightCount, -1)
 }
 
 // GetRequestInFlight returns the current number of in-flight requests
 func GetRequestInFlight() float64 {
-	return RequestInFlight.Get()
+	return float64(atomic.LoadInt64(&requestInFlightCount))
 }
 
 // RecordRedisFallbackHit records a Redis fallback cache hit
