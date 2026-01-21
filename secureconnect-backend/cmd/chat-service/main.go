@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	intDatabase "secureconnect-backend/internal/database"
 	chatHandler "secureconnect-backend/internal/handler/http/chat"
 	wsHandler "secureconnect-backend/internal/handler/ws"
 	"secureconnect-backend/internal/middleware"
@@ -20,13 +21,10 @@ import (
 	"secureconnect-backend/internal/repository/redis"
 	chatService "secureconnect-backend/internal/service/chat"
 	notificationService "secureconnect-backend/internal/service/notification"
-	"secureconnect-backend/pkg/database"
+	pkgDatabase "secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
 	"secureconnect-backend/pkg/metrics"
-
-	// Import internal database package for Cassandra repository
-	intdb "secureconnect-backend/internal/database"
 )
 
 func main() {
@@ -42,7 +40,7 @@ func main() {
 	jwtManager := jwt.NewJWTManager(jwtSecret, 15*time.Minute, 30*24*time.Hour)
 
 	// 2. Connect to Cassandra
-	cassandraDB, err := intdb.NewCassandraDB(
+	cassandraDB, err := intDatabase.NewCassandraDB(
 		[]string{env.GetString("CASSANDRA_HOST", "localhost")},
 		"secureconnect_ks",
 	)
@@ -53,8 +51,8 @@ func main() {
 
 	log.Println("✅ Connected to Cassandra")
 
-	// 3. Connect to Redis
-	redisConfig := &database.RedisConfig{
+	// 3. Connect to Redis with degraded mode support
+	redisConfig := &intDatabase.RedisConfig{
 		Host:     env.GetString("REDIS_HOST", "localhost"),
 		Port:     6379,
 		Password: env.GetString("REDIS_PASSWORD", ""),
@@ -63,7 +61,7 @@ func main() {
 		Timeout:  5 * time.Second,
 	}
 
-	redisDB, err := database.NewRedisDB(redisConfig)
+	redisDB, err := intDatabase.NewRedisDB(redisConfig)
 	if err != nil {
 		log.Fatalf("Failed to connect to Redis: %v", err)
 	}
@@ -71,8 +69,12 @@ func main() {
 
 	log.Println("✅ Connected to Redis")
 
+	// Start background Redis health check
+	go redisDB.StartHealthCheck(context.Background(), 10*time.Second)
+	log.Println("✅ Redis health check started (10s interval)")
+
 	// 4. Connect to CockroachDB
-	cockroachConfig := &database.CockroachConfig{
+	cockroachConfig := &pkgDatabase.CockroachConfig{
 		Host:     env.GetString("COCKROACH_HOST", "localhost"),
 		Port:     env.GetInt("COCKROACH_PORT", 26257),
 		User:     env.GetString("COCKROACH_USER", "root"),
@@ -81,7 +83,7 @@ func main() {
 		SSLMode:  env.GetString("COCKROACH_SSLMODE", "disable"),
 	}
 
-	cockroachDB, err := database.NewCockroachDB(context.Background(), cockroachConfig)
+	cockroachDB, err := pkgDatabase.NewCockroachDB(context.Background(), cockroachConfig)
 	if err != nil {
 		log.Fatalf("Failed to connect to CockroachDB: %v", err)
 	}
@@ -91,7 +93,7 @@ func main() {
 
 	// 5. Initialize Repositories
 	messageRepo := cassandra.NewMessageRepository(cassandraDB)
-	presenceRepo := redis.NewPresenceRepository(redisDB.Client)
+	presenceRepo := redis.NewPresenceRepository(redisDB)
 	userRepo := cockroach.NewUserRepository(cockroachDB.Pool)
 	conversationRepo := cockroach.NewConversationRepository(cockroachDB.Pool)
 	notificationRepo := cockroach.NewNotificationRepository(cockroachDB.Pool)

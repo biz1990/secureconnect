@@ -201,9 +201,7 @@ func (h *PollHub) run() {
 				h.mu.Lock()
 				if clients, ok := h.conversations[message.ConversationID]; ok {
 					for _, client := range clientsToRemove {
-						if _, exists := clients[client]; exists {
-							delete(clients, client)
-						}
+						delete(clients, client)
 					}
 				}
 				h.mu.Unlock()

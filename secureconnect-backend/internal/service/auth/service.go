@@ -55,6 +55,7 @@ type SessionRepository interface {
 	GetFailedLoginAttempt(ctx context.Context, key string) (*redis.FailedLoginAttempt, error)
 	SetFailedLoginAttempt(ctx context.Context, key string, attempt *redis.FailedLoginAttempt) error
 	DeleteFailedLoginAttempts(ctx context.Context, key string) error
+	IsDegraded() bool
 }
 
 // PresenceRepository interface
@@ -276,18 +277,25 @@ func (s *Service) Login(ctx context.Context, input *LoginInput) (*LoginOutput, e
 		return nil, fmt.Errorf("failed to generate refresh token: %w", err)
 	}
 
-	// 5. Store session
-	session := &redis.Session{
-		SessionID:    uuid.New().String(),
-		UserID:       user.UserID,
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(constants.SessionExpiry),
-	}
+	// 5. Store session (with degraded mode support)
+	// DEGRADED MODE: When Redis is degraded, skip session storage but still allow login
+	if s.sessionRepo.IsDegraded() {
+		logger.Warn("Session storage skipped (Redis degraded)",
+			zap.String("service", "auth-service"),
+			zap.String("user_id", user.UserID.String()))
+	} else {
+		session := &redis.Session{
+			SessionID:    uuid.New().String(),
+			UserID:       user.UserID,
+			AccessToken:  accessToken,
+			RefreshToken: refreshToken,
+			CreatedAt:    time.Now(),
+			ExpiresAt:    time.Now().Add(constants.SessionExpiry),
+		}
 
-	if err := s.sessionRepo.CreateSession(ctx, session, constants.SessionExpiry); err != nil {
-		return nil, fmt.Errorf("failed to create session: %w", err)
+		if err := s.sessionRepo.CreateSession(ctx, session, constants.SessionExpiry); err != nil {
+			return nil, fmt.Errorf("failed to create session: %w", err)
+		}
 	}
 
 	// 6. Update user status to online

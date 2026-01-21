@@ -13,9 +13,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"secureconnect-backend/internal/database"
 	"secureconnect-backend/pkg/constants"
 	"secureconnect-backend/pkg/logger"
 )
@@ -29,7 +29,7 @@ type SignalingHub struct {
 	subscriptionCancels map[uuid.UUID]context.CancelFunc
 
 	// Redis client for Pub/Sub
-	redisClient *redis.Client
+	redisClient *database.RedisClient
 
 	// Mutex for thread-safe operations
 	mu sync.RWMutex
@@ -101,7 +101,7 @@ var signalingUpgrader = websocket.Upgrader{
 }
 
 // NewSignalingHub creates a new signaling hub
-func NewSignalingHub(redisClient *redis.Client) *SignalingHub {
+func NewSignalingHub(redisClient *database.RedisClient) *SignalingHub {
 	// Default max connections: 1000 (configurable via environment if needed)
 	maxConns := 1000
 	if val := os.Getenv("WS_MAX_SIGNALING_CONNECTIONS"); val != "" {
@@ -140,7 +140,14 @@ func (h *SignalingHub) run() {
 				h.subscriptionCancels[client.callID] = cancel
 
 				// Subscribe to Redis channel for this call
-				go h.subscribeToCall(ctx, client.callID)
+				// DEGRADED MODE: Skip Redis subscription when degraded
+				if h.redisClient.IsDegraded() {
+					logger.Warn("Using local-only signaling (Redis degraded)",
+						zap.String("service", "video-service"),
+						zap.String("call_id", client.callID.String()))
+				} else {
+					go h.subscribeToCall(ctx, client.callID)
+				}
 			}
 			h.calls[client.callID][client] = true
 			h.mu.Unlock()
@@ -223,7 +230,12 @@ func (h *SignalingHub) run() {
 func (h *SignalingHub) subscribeToCall(ctx context.Context, callID uuid.UUID) {
 	channel := fmt.Sprintf("call:%s", callID)
 
-	pubsub := h.redisClient.Subscribe(ctx, channel)
+	pubsub := h.redisClient.SafeSubscribe(ctx, channel)
+	if pubsub == nil {
+		logger.Warn("Redis subscription skipped (degraded mode)",
+			zap.String("call_id", callID.String()))
+		return
+	}
 	defer pubsub.Close()
 
 	if _, err := pubsub.Receive(ctx); err != nil {
@@ -243,6 +255,7 @@ func (h *SignalingHub) subscribeToCall(ctx context.Context, callID uuid.UUID) {
 			if msg == nil {
 				continue
 			}
+
 			// Parse message from Redis
 			var signalMsg SignalingMessage
 			if err := json.Unmarshal([]byte(msg.Payload), &signalMsg); err != nil {

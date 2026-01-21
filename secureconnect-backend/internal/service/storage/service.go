@@ -13,6 +13,7 @@ import (
 	"secureconnect-backend/internal/domain"
 	"secureconnect-backend/pkg/constants"
 	"secureconnect-backend/pkg/logger"
+	"secureconnect-backend/pkg/resilience"
 )
 
 // FileRepository interface
@@ -64,19 +65,31 @@ type Service struct {
 	storage    ObjectStorage
 	bucketName string
 	fileRepo   FileRepository
+	resilience *resilience.MinIOResilience
 }
 
 // NewService creates a new storage service
 func NewService(storage ObjectStorage, bucketName string, fileRepo FileRepository) (*Service, error) {
-	// Ensure bucket exists
+	// Ensure bucket exists with resilience
 	ctx := context.Background()
-	exists, err := storage.BucketExists(ctx, bucketName)
+
+	// Initialize resilience layer
+	resilienceLayer := resilience.NewMinIOResilience()
+
+	var exists bool
+	err := resilienceLayer.Execute(ctx, "bucket_exists", func() error {
+		var err error
+		exists, err = storage.BucketExists(ctx, bucketName)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to check bucket: %w", err)
 	}
 
 	if !exists {
-		err = storage.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+		err = resilienceLayer.Execute(ctx, "create_bucket", func() error {
+			return storage.MakeBucket(ctx, bucketName, minio.MakeBucketOptions{})
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create bucket: %w", err)
 		}
@@ -86,6 +99,7 @@ func NewService(storage ObjectStorage, bucketName string, fileRepo FileRepositor
 		storage:    storage,
 		bucketName: bucketName,
 		fileRepo:   fileRepo,
+		resilience: resilienceLayer,
 	}, nil
 }
 
@@ -125,8 +139,13 @@ func (s *Service) GenerateUploadURL(ctx context.Context, userID uuid.UUID, input
 	// Generate object key (path in MinIO)
 	objectKey := fmt.Sprintf("users/%s/%s", userID, fileID)
 
-	// Generate presigned URL (valid for 15 minutes)
-	presignedURL, err := s.storage.PresignedPutObject(ctx, s.bucketName, objectKey, constants.PresignedURLExpiry)
+	// Generate presigned URL (valid for 15 minutes) with resilience
+	var presignedURL *url.URL
+	err = s.resilience.Execute(ctx, "presigned_put_object", func() error {
+		var err error
+		presignedURL, err = s.storage.PresignedPutObject(ctx, s.bucketName, objectKey, constants.PresignedURLExpiry)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate presigned URL: %w", err)
 	}
@@ -175,13 +194,17 @@ func (s *Service) GenerateDownloadURL(ctx context.Context, userID, fileID uuid.U
 		return "", fmt.Errorf("unauthorized access to file")
 	}
 
-	// Generate presigned download URL (valid for 1 hour)
-	presignedURL, err := s.storage.PresignedGetObject(ctx, s.bucketName, file.MinIOObjectKey, time.Hour, nil)
+	// Generate presigned download URL (valid for 1 hour) with resilience
+	var presignedURL *url.URL
+	err = s.resilience.Execute(ctx, "presigned_get_object", func() error {
+		var err error
+		presignedURL, err = s.storage.PresignedGetObject(ctx, s.bucketName, file.MinIOObjectKey, time.Hour, nil)
+		return err
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to generate download URL: %w", err)
 	}
 
-	// Note: For now, ownership check is sufficient
 	return presignedURL.String(), nil
 }
 
@@ -195,17 +218,20 @@ func (s *Service) DeleteFile(ctx context.Context, userID, fileID uuid.UUID) erro
 
 	// Verify ownership
 	if file.UserID != userID {
-		return fmt.Errorf("unauthorized")
+		return fmt.Errorf("unauthorized access to file")
 	}
 
-	// Remove from MinIO
-	err = s.storage.RemoveObject(ctx, s.bucketName, file.MinIOObjectKey, minio.RemoveObjectOptions{})
+	// Remove from MinIO with resilience
+	err = s.resilience.Execute(ctx, "remove_object", func() error {
+		return s.storage.RemoveObject(ctx, s.bucketName, file.MinIOObjectKey, minio.RemoveObjectOptions{})
+	})
 	if err != nil {
 		return fmt.Errorf("failed to delete file from storage: %w", err)
 	}
 
 	// Update status in database
-	if err := s.fileRepo.UpdateStatus(ctx, fileID, "deleted"); err != nil {
+	err = s.fileRepo.UpdateStatus(ctx, fileID, "deleted")
+	if err != nil {
 		return fmt.Errorf("failed to update file status: %w", err)
 	}
 
@@ -228,7 +254,7 @@ func (s *Service) GetUserQuota(ctx context.Context, userID uuid.UUID) (int64, in
 // CleanupExpiredUploads removes files stuck in "uploading" status for longer than expiry
 // This should be called periodically (e.g., every hour) to clean up orphaned uploads
 func (s *Service) CleanupExpiredUploads(ctx context.Context) (int, error) {
-	// Use presigned URL expiry as the threshold for expired uploads
+	// Use presigned URL expiry as threshold for expired uploads
 	expiryDuration := constants.PresignedURLExpiry
 
 	// Get expired uploads
@@ -239,8 +265,10 @@ func (s *Service) CleanupExpiredUploads(ctx context.Context) (int, error) {
 
 	cleanedCount := 0
 	for _, file := range expiredUploads {
-		// Attempt to remove from MinIO (may fail if file was never uploaded)
-		err := s.storage.RemoveObject(ctx, s.bucketName, file.MinIOObjectKey, minio.RemoveObjectOptions{})
+		// Attempt to remove from MinIO with resilience (may fail if file was never uploaded)
+		err := s.resilience.Execute(ctx, "remove_expired_object", func() error {
+			return s.storage.RemoveObject(ctx, s.bucketName, file.MinIOObjectKey, minio.RemoveObjectOptions{})
+		})
 		if err != nil {
 			logger.Warn("Failed to remove expired upload from MinIO",
 				zap.String("fileID", file.FileID.String()),
@@ -252,7 +280,6 @@ func (s *Service) CleanupExpiredUploads(ctx context.Context) (int, error) {
 		err = s.fileRepo.UpdateStatus(ctx, file.FileID, "failed")
 		if err != nil {
 			logger.Warn("Failed to update expired upload status",
-				zap.String("fileID", file.FileID.String()),
 				zap.Error(err))
 			continue
 		}

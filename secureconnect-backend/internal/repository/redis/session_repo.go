@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"secureconnect-backend/internal/database"
 	"secureconnect-backend/pkg/constants"
 	"time"
 
@@ -13,11 +14,11 @@ import (
 
 // SessionRepository handles user session management in Redis
 type SessionRepository struct {
-	client *redis.Client
+	client *database.RedisClient
 }
 
 // NewSessionRepository creates a new SessionRepository
-func NewSessionRepository(client *redis.Client) *SessionRepository {
+func NewSessionRepository(client *database.RedisClient) *SessionRepository {
 	return &SessionRepository{client: client}
 }
 
@@ -40,14 +41,14 @@ func (r *SessionRepository) CreateSession(ctx context.Context, session *Session,
 		return fmt.Errorf("failed to marshal session: %w", err)
 	}
 
-	err = r.client.Set(ctx, key, data, ttl).Err()
+	err = r.client.SafeSet(ctx, key, data, ttl).Err()
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 
 	// Also store user_id -> session_id mapping for quick lookup
 	userSessionKey := fmt.Sprintf("user:sessions:%s", session.UserID)
-	err = r.client.SAdd(ctx, userSessionKey, session.SessionID).Err()
+	err = r.client.SafeSAdd(ctx, userSessionKey, session.SessionID).Err()
 	if err != nil {
 		return fmt.Errorf("failed to add session to user index: %w", err)
 	}
@@ -59,7 +60,7 @@ func (r *SessionRepository) CreateSession(ctx context.Context, session *Session,
 func (r *SessionRepository) GetSession(ctx context.Context, sessionID string) (*Session, error) {
 	key := fmt.Sprintf("session:%s", sessionID)
 
-	data, err := r.client.Get(ctx, key).Result()
+	data, err := r.client.SafeGet(ctx, key).Result()
 	if err != nil {
 		if err == redis.Nil {
 			return nil, fmt.Errorf("session not found")
@@ -80,14 +81,14 @@ func (r *SessionRepository) GetSession(ctx context.Context, sessionID string) (*
 func (r *SessionRepository) DeleteSession(ctx context.Context, sessionID string, userID uuid.UUID) error {
 	key := fmt.Sprintf("session:%s", sessionID)
 
-	err := r.client.Del(ctx, key).Err()
+	err := r.client.SafeDel(ctx, key).Err()
 	if err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 
 	// Remove from user index
 	userSessionKey := fmt.Sprintf("user:sessions:%s", userID)
-	r.client.SRem(ctx, userSessionKey, sessionID)
+	r.client.SafeSRem(ctx, userSessionKey, sessionID)
 
 	return nil
 }
@@ -96,7 +97,7 @@ func (r *SessionRepository) DeleteSession(ctx context.Context, sessionID string,
 func (r *SessionRepository) DeleteAllUserSessions(ctx context.Context, userID uuid.UUID) error {
 	userSessionKey := fmt.Sprintf("user:sessions:%s", userID)
 
-	sessionIDs, err := r.client.SMembers(ctx, userSessionKey).Result()
+	sessionIDs, err := r.client.SafeSMembers(ctx, userSessionKey).Result()
 	if err != nil {
 		return fmt.Errorf("failed to get user sessions: %w", err)
 	}
@@ -104,11 +105,11 @@ func (r *SessionRepository) DeleteAllUserSessions(ctx context.Context, userID uu
 	// Delete each session
 	for _, sessionID := range sessionIDs {
 		key := fmt.Sprintf("session:%s", sessionID)
-		r.client.Del(ctx, key)
+		r.client.SafeDel(ctx, key)
 	}
 
 	// Delete user index
-	r.client.Del(ctx, userSessionKey)
+	r.client.SafeDel(ctx, userSessionKey)
 
 	return nil
 }
@@ -116,19 +117,19 @@ func (r *SessionRepository) DeleteAllUserSessions(ctx context.Context, userID uu
 // RefreshSessionTTL extends session expiration
 func (r *SessionRepository) RefreshSessionTTL(ctx context.Context, sessionID string, ttl time.Duration) error {
 	key := fmt.Sprintf("session:%s", sessionID)
-	return r.client.Expire(ctx, key, ttl).Err()
+	return r.client.SafeExpire(ctx, key, ttl).Err()
 }
 
 // BlacklistToken adds a token JTI to the blacklist with expiration
 func (r *SessionRepository) BlacklistToken(ctx context.Context, jti string, expiresAt time.Duration) error {
 	key := fmt.Sprintf("blacklist:%s", jti)
-	return r.client.Set(ctx, key, "revoked", expiresAt).Err()
+	return r.client.SafeSet(ctx, key, "revoked", expiresAt).Err()
 }
 
 // IsTokenBlacklisted checks if a token JTI is in the blacklist
 func (r *SessionRepository) IsTokenBlacklisted(ctx context.Context, jti string) (bool, error) {
 	key := fmt.Sprintf("blacklist:%s", jti)
-	exists, err := r.client.Exists(ctx, key).Result()
+	exists, err := r.client.SafeExists(ctx, key).Result()
 	if err != nil {
 		return false, fmt.Errorf("failed to check blacklist: %w", err)
 	}
@@ -151,7 +152,7 @@ type FailedLoginAttempt struct {
 
 // GetAccountLock retrieves account lock status
 func (r *SessionRepository) GetAccountLock(ctx context.Context, key string) (*AccountLock, error) {
-	data, err := r.client.Get(ctx, key).Result()
+	data, err := r.client.SafeGet(ctx, key).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account lock: %w", err)
 	}
@@ -172,7 +173,7 @@ func (r *SessionRepository) GetAccountLock(ctx context.Context, key string) (*Ac
 // LockAccount locks an account
 func (r *SessionRepository) LockAccount(ctx context.Context, key string, lockedUntil time.Time) error {
 	data := fmt.Sprintf("%d", lockedUntil.Unix())
-	err := r.client.Set(ctx, key, data, constants.AccountLockDuration).Err()
+	err := r.client.SafeSet(ctx, key, data, constants.AccountLockDuration).Err()
 	if err != nil {
 		return fmt.Errorf("failed to lock account: %w", err)
 	}
@@ -181,7 +182,7 @@ func (r *SessionRepository) LockAccount(ctx context.Context, key string, lockedU
 
 // GetFailedLoginAttempts retrieves failed login attempts
 func (r *SessionRepository) GetFailedLoginAttempts(ctx context.Context, key string) (int, error) {
-	data, err := r.client.Get(ctx, key).Result()
+	data, err := r.client.SafeGet(ctx, key).Result()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get failed login attempts: %w", err)
 	}
@@ -199,7 +200,7 @@ func (r *SessionRepository) GetFailedLoginAttempts(ctx context.Context, key stri
 
 // GetFailedLoginAttempt retrieves full failed login attempt information
 func (r *SessionRepository) GetFailedLoginAttempt(ctx context.Context, key string) (*FailedLoginAttempt, error) {
-	data, err := r.client.Get(ctx, key).Result()
+	data, err := r.client.SafeGet(ctx, key).Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get failed login attempt: %w", err)
 	}
@@ -220,7 +221,7 @@ func (r *SessionRepository) GetFailedLoginAttempt(ctx context.Context, key strin
 // SetFailedLoginAttempts sets failed login attempts
 func (r *SessionRepository) SetFailedLoginAttempts(ctx context.Context, key string, attempts int) error {
 	data := fmt.Sprintf("%d", attempts)
-	err := r.client.Set(ctx, key, data, constants.FailedLoginWindow).Err()
+	err := r.client.SafeSet(ctx, key, data, constants.FailedLoginWindow).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set failed login attempts: %w", err)
 	}
@@ -234,7 +235,7 @@ func (r *SessionRepository) SetFailedLoginAttempt(ctx context.Context, key strin
 		return fmt.Errorf("failed to marshal failed login attempt: %w", err)
 	}
 
-	err = r.client.Set(ctx, key, data, constants.FailedLoginWindow).Err()
+	err = r.client.SafeSet(ctx, key, data, constants.FailedLoginWindow).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set failed login attempt: %w", err)
 	}
@@ -243,9 +244,14 @@ func (r *SessionRepository) SetFailedLoginAttempt(ctx context.Context, key strin
 
 // DeleteFailedLoginAttempts deletes failed login attempts
 func (r *SessionRepository) DeleteFailedLoginAttempts(ctx context.Context, key string) error {
-	err := r.client.Del(ctx, key).Err()
+	err := r.client.SafeDel(ctx, key).Err()
 	if err != nil {
 		return fmt.Errorf("failed to delete failed login attempts: %w", err)
 	}
 	return nil
+}
+
+// IsDegraded returns true if Redis is in degraded mode
+func (r *SessionRepository) IsDegraded() bool {
+	return r.client.IsDegraded()
 }

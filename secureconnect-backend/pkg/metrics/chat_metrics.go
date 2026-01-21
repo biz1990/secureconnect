@@ -94,4 +94,22 @@ var (
 		Name: "chat_conversation_participants_total",
 		Help: "Current number of participants per conversation",
 	}, []string{"conversation_id"})
+
+	// WebSocket connection metrics
+	ChatWebSocketConnections = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "chat_websocket_connections",
+		Help: "Current number of active WebSocket connections",
+	})
+
+	// WebSocket message metrics
+	ChatWebSocketMessagesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "chat_websocket_messages_total",
+		Help: "Total number of WebSocket messages",
+	}, []string{"direction"}) // "in" for received, "out" for sent
+
+	// WebSocket error metrics
+	ChatWebSocketErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "chat_websocket_errors_total",
+		Help: "Total number of WebSocket errors",
+	}, []string{"error_type"})
 )

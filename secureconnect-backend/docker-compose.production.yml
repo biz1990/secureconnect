@@ -197,6 +197,8 @@ services:
       - SMTP_PASSWORD_FILE=/run/secrets/smtp_password
       - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
       - APP_URL=${APP_URL:-https://secureconnect.com}
+      - LOG_OUTPUT=file
+      - LOG_FILE_PATH=/logs/api-gateway.log
     volumes:
       - ./configs:/app/configs
       - app_logs:/logs
@@ -250,6 +252,8 @@ services:
       - SMTP_PASSWORD_FILE=/run/secrets/smtp_password
       - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
       - APP_URL=${APP_URL:-https://secureconnect.com}
+      - LOG_OUTPUT=file
+      - LOG_FILE_PATH=/logs/auth-service.log
     volumes:
       - app_logs:/logs
     depends_on:
@@ -293,6 +297,8 @@ services:
       - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
+      - LOG_OUTPUT=file
+      - LOG_FILE_PATH=/logs/chat-service.log
     volumes:
       - app_logs:/logs
     depends_on:
@@ -336,6 +342,8 @@ services:
       - FIREBASE_PROJECT_ID_FILE=/run/secrets/firebase_project_id
       - FIREBASE_CREDENTIALS_PATH=/run/secrets/firebase_credentials
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
+      - LOG_OUTPUT=file
+      - LOG_FILE_PATH=/logs/video-service.log
     volumes:
       - app_logs:/logs
     depends_on:
@@ -375,6 +383,8 @@ services:
       - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
+      - LOG_OUTPUT=file
+      - LOG_FILE_PATH=/logs/storage-service.log
     volumes:
       - app_logs:/logs
     depends_on:

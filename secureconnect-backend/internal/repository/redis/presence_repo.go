@@ -6,16 +6,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
+
+	"secureconnect-backend/internal/database"
 )
 
 // PresenceRepository handles user online/offline status in Redis
 type PresenceRepository struct {
-	client *redis.Client
+	client *database.RedisClient
 }
 
 // NewPresenceRepository creates a new PresenceRepository
-func NewPresenceRepository(client *redis.Client) *PresenceRepository {
+func NewPresenceRepository(client *database.RedisClient) *PresenceRepository {
 	return &PresenceRepository{client: client}
 }
 
@@ -24,13 +25,13 @@ func (r *PresenceRepository) SetUserOnline(ctx context.Context, userID uuid.UUID
 	key := fmt.Sprintf("presence:%s", userID)
 
 	// Set status with TTL (auto-expire after 5 minutes if not refreshed)
-	err := r.client.Set(ctx, key, "online", 5*time.Minute).Err()
+	err := r.client.SafeSet(ctx, key, "online", 5*time.Minute).Err()
 	if err != nil {
 		return fmt.Errorf("failed to set user online: %w", err)
 	}
 
 	// Add to online users set for quick listing
-	err = r.client.SAdd(ctx, "presence:online", userID.String()).Err()
+	err = r.client.SafeSAdd(ctx, "presence:online", userID.String()).Err()
 	if err != nil {
 		return fmt.Errorf("failed to add to online set: %w", err)
 	}
@@ -43,13 +44,13 @@ func (r *PresenceRepository) SetUserOffline(ctx context.Context, userID uuid.UUI
 	key := fmt.Sprintf("presence:%s", userID)
 
 	// Delete presence key
-	err := r.client.Del(ctx, key).Err()
+	err := r.client.SafeDel(ctx, key).Err()
 	if err != nil {
 		return fmt.Errorf("failed to delete presence: %w", err)
 	}
 
 	// Remove from online set
-	err = r.client.SRem(ctx, "presence:online", userID.String()).Err()
+	err = r.client.SafeSRem(ctx, "presence:online", userID.String()).Err()
 	if err != nil {
 		return fmt.Errorf("failed to remove from online set: %w", err)
 	}
@@ -61,7 +62,7 @@ func (r *PresenceRepository) SetUserOffline(ctx context.Context, userID uuid.UUI
 func (r *PresenceRepository) IsUserOnline(ctx context.Context, userID uuid.UUID) (bool, error) {
 	key := fmt.Sprintf("presence:%s", userID)
 
-	exists, err := r.client.Exists(ctx, key).Result()
+	exists, err := r.client.SafeExists(ctx, key).Result()
 	if err != nil {
 		return false, fmt.Errorf("failed to check presence: %w", err)
 	}
@@ -74,7 +75,7 @@ func (r *PresenceRepository) RefreshPresence(ctx context.Context, userID uuid.UU
 	key := fmt.Sprintf("presence:%s", userID)
 
 	// Refresh TTL
-	err := r.client.Expire(ctx, key, 5*time.Minute).Err()
+	err := r.client.SafeExpire(ctx, key, 5*time.Minute).Err()
 	if err != nil {
 		return fmt.Errorf("failed to refresh presence: %w", err)
 	}
@@ -84,7 +85,7 @@ func (r *PresenceRepository) RefreshPresence(ctx context.Context, userID uuid.UU
 
 // GetOnlineUsers retrieves list of online user IDs
 func (r *PresenceRepository) GetOnlineUsers(ctx context.Context) ([]uuid.UUID, error) {
-	userIDStrs, err := r.client.SMembers(ctx, "presence:online").Result()
+	userIDStrs, err := r.client.SafeSMembers(ctx, "presence:online").Result()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get online users: %w", err)
 	}
@@ -103,9 +104,14 @@ func (r *PresenceRepository) GetOnlineUsers(ctx context.Context) ([]uuid.UUID, e
 
 // GetOnlineCount returns number of online users
 func (r *PresenceRepository) GetOnlineCount(ctx context.Context) (int64, error) {
-	count, err := r.client.SCard(ctx, "presence:online").Result()
+	count, err := r.client.SafeSCard(ctx, "presence:online").Result()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count online users: %w", err)
 	}
 	return count, nil
+}
+
+// IsDegraded returns true if Redis is in degraded mode
+func (r *PresenceRepository) IsDegraded() bool {
+	return r.client.IsDegraded()
 }

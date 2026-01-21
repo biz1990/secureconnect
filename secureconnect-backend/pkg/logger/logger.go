@@ -21,6 +21,7 @@ type Config struct {
 	Format   string // json, text
 	Output   string // stdout, file
 	FilePath string
+	Service  string // Service name for log identification
 }
 
 // Init initializes the global logger with configuration
@@ -45,9 +46,11 @@ func Init(cfg *Config) error {
 		zapConfig = zap.NewProductionConfig()
 		zapConfig.EncoderConfig.TimeKey = "timestamp"
 		zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+		zapConfig.EncoderConfig.MessageKey = "message" // Changed from "msg" to "message" for Promtail compatibility
 	} else {
 		zapConfig = zap.NewDevelopmentConfig()
 		zapConfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+		zapConfig.EncoderConfig.MessageKey = "message" // Changed from "msg" to "message" for Promtail compatibility
 	}
 
 	zapConfig.Level = zap.NewAtomicLevelAt(level)
@@ -72,23 +75,32 @@ func Init(cfg *Config) error {
 		return err
 	}
 
+	// Add service field to all logs
+	if cfg.Service != "" {
+		Log = Log.With(zap.String("service", cfg.Service))
+	}
+
 	Sugar = Log.Sugar()
 
 	return nil
 }
 
 // InitDefault initializes logger with default settings
-func InitDefault() {
+func InitDefault(serviceName string) {
 	cfg := &Config{
 		Level:    getEnv("LOG_LEVEL", "info"),
 		Format:   getEnv("LOG_FORMAT", "json"),
 		Output:   getEnv("LOG_OUTPUT", "stdout"),
-		FilePath: getEnv("LOG_FILE_PATH", "/logs/app.log"),
+		FilePath: getEnv("LOG_FILE_PATH", "logs/app.log"), // Windows-compatible path
+		Service:  serviceName,
 	}
 
 	if err := Init(cfg); err != nil {
 		// Fallback to basic logger
 		Log, _ = zap.NewProduction()
+		if serviceName != "" {
+			Log = Log.With(zap.String("service", serviceName))
+		}
 		Sugar = Log.Sugar()
 	}
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,7 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
+	"secureconnect-backend/internal/database"
 	authHandler "secureconnect-backend/internal/handler/http/auth"
 	"secureconnect-backend/internal/handler/http/conversation"
 	userHandler "secureconnect-backend/internal/handler/http/user"
@@ -23,33 +24,38 @@ import (
 	userService "secureconnect-backend/internal/service/user"
 	"secureconnect-backend/pkg/config"
 	"secureconnect-backend/pkg/constants"
-	"secureconnect-backend/pkg/database"
+	pkgDatabase "secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/email"
 	"secureconnect-backend/pkg/jwt"
+	"secureconnect-backend/pkg/logger"
 	"secureconnect-backend/pkg/metrics"
 )
 
 func main() {
+	// Initialize logger with service name
+	logger.InitDefault("auth-service")
+	defer logger.Sync()
+
 	// Initialize context
 	ctx := context.Background()
 
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Fatal("Failed to load config")
 	}
 
 	// Validate JWT secret in production
 	if cfg.Server.Environment == "production" {
 		if cfg.JWT.Secret == "" {
-			log.Fatal("JWT_SECRET environment variable is required in production")
+			logger.Fatal("JWT_SECRET environment variable is required in production")
 		}
 		if len(cfg.JWT.Secret) < 32 {
-			log.Fatal("JWT_SECRET must be at least 32 characters")
+			logger.Fatal("JWT_SECRET must be at least 32 characters")
 		}
 		// Validate SMTP configuration in production
 		if cfg.SMTP.Username == "" || cfg.SMTP.Password == "" {
-			log.Fatal("SMTP_USERNAME and SMTP_PASSWORD environment variables are required in production")
+			logger.Fatal("SMTP_USERNAME and SMTP_PASSWORD environment variables are required in production")
 		}
 	}
 
@@ -61,7 +67,7 @@ func main() {
 	)
 
 	// 2. Connect to CockroachDB
-	cockroachDB, err := database.NewCockroachDB(ctx, &database.CockroachConfig{
+	cockroachDB, err := pkgDatabase.NewCockroachDB(ctx, &pkgDatabase.CockroachConfig{
 		Host:     cfg.Database.Host,
 		Port:     cfg.Database.Port,
 		User:     cfg.Database.User,
@@ -70,13 +76,13 @@ func main() {
 		SSLMode:  cfg.Database.SSLMode,
 	})
 	if err != nil {
-		log.Fatalf("Failed to connect to CockroachDB: %v", err)
+		logger.Fatal("Failed to connect to CockroachDB")
 	}
 	defer cockroachDB.Close()
 
-	log.Println("✅ Connected to CockroachDB")
+	logger.Info("Connected to CockroachDB")
 
-	// 3. Connect to Redis
+	// 3. Connect to Redis with degraded mode support
 	redisDB, err := database.NewRedisDB(&database.RedisConfig{
 		Host:     cfg.Redis.Host,
 		Port:     cfg.Redis.Port,
@@ -86,11 +92,15 @@ func main() {
 		Timeout:  cfg.Redis.Timeout,
 	})
 	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		logger.Fatal("Failed to connect to Redis")
 	}
 	defer redisDB.Close()
 
-	log.Println("✅ Connected to Redis")
+	logger.Info("Connected to Redis")
+
+	// Start background Redis health check
+	go redisDB.StartHealthCheck(ctx, 10*time.Second)
+	logger.Info("Redis health check started (10s interval)")
 
 	// 4. Initialize Repositories
 	userRepo := cockroach.NewUserRepository(cockroachDB.Pool)
@@ -98,8 +108,8 @@ func main() {
 	emailVerificationRepo := cockroach.NewEmailVerificationRepository(cockroachDB.Pool)
 	conversationRepo := cockroach.NewConversationRepository(cockroachDB.Pool)
 	directoryRepo := redis.NewDirectoryRepository(redisDB.Client)
-	sessionRepo := redis.NewSessionRepository(redisDB.Client)
-	presenceRepo := redis.NewPresenceRepository(redisDB.Client)
+	sessionRepo := redis.NewSessionRepository(redisDB)
+	presenceRepo := redis.NewPresenceRepository(redisDB)
 
 	// 5. Initialize Services
 	// Create email service (using SMTP in production, MockSender in development)
@@ -117,14 +127,14 @@ func main() {
 			Password: cfg.SMTP.Password,
 			From:     cfg.SMTP.From,
 		})
-		log.Println("📧 Using SMTP email provider")
+		logger.Info("Using SMTP email provider")
 	} else {
 		// Development: Use mock sender
 		if cfg.Server.Environment == "production" {
-			log.Fatal("SMTP credentials are required in production mode")
+			logger.Fatal("SMTP credentials are required in production mode")
 		}
 		emailSender = &email.MockSender{}
-		log.Println("📧 Using Mock email sender (development)")
+		logger.Info("Using Mock email sender (development)")
 	}
 	emailSvc := email.NewService(emailSender)
 
@@ -181,6 +191,9 @@ func main() {
 			"time":    time.Now().UTC(),
 		})
 	})
+
+	// Metrics endpoint (for Prometheus scraping - no auth required)
+	router.GET("/metrics", middleware.MetricsHandler(appMetrics))
 
 	// API version 1 routes
 	v1 := router.Group("/v1")
@@ -252,13 +265,16 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("🚀 Auth Service starting on port %d\n", cfg.Server.Port)
-		log.Println("📍 Routes:")
-		log.Println("   - Auth: /v1/auth/*")
-		log.Println("   - Password Reset: /v1/auth/password-reset/*")
-		log.Println("   - Users: /v1/users/*")
+		logger.Info("Auth Service starting",
+			zap.Int("port", cfg.Server.Port),
+		)
+		logger.Info("Routes configured",
+			zap.String("auth", "/v1/auth/*"),
+			zap.String("password_reset", "/v1/auth/password-reset/*"),
+			zap.String("users", "/v1/users/*"),
+		)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
+			logger.Fatal("Failed to start server")
 		}
 	}()
 
@@ -267,13 +283,13 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down server...")
+	logger.Info("Shutting down server...")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), constants.GracefulShutdownTimeout)
 	defer cancel()
 
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Server forced to shutdown: %v", err)
+		logger.Error("Server forced to shutdown")
 	}
 
-	log.Println("Server exited")
+	logger.Info("Server exited")
 }

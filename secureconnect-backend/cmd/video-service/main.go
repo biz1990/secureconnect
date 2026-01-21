@@ -9,15 +9,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/redis/go-redis/v9"
 
+	intDatabase "secureconnect-backend/internal/database"
 	videoHandler "secureconnect-backend/internal/handler/http/video"
 	wsHandler "secureconnect-backend/internal/handler/ws"
 	"secureconnect-backend/internal/middleware"
 	"secureconnect-backend/internal/repository/cockroach"
 	redisRepo "secureconnect-backend/internal/repository/redis"
 	videoService "secureconnect-backend/internal/service/video"
-	"secureconnect-backend/pkg/database"
+	pkgDatabase "secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
 	"secureconnect-backend/pkg/metrics"
@@ -43,7 +43,7 @@ func main() {
 	productionMode := os.Getenv("ENV") == "production"
 
 	// 2. Connect to CockroachDB for call logs with retry logic
-	dbConfig := &database.CockroachConfig{
+	dbConfig := &pkgDatabase.CockroachConfig{
 		Host:     env.GetString("DB_HOST", "localhost"),
 		Port:     26257,
 		User:     env.GetString("DB_USER", "root"),
@@ -53,7 +53,7 @@ func main() {
 	}
 
 	// Connect to CockroachDB with exponential backoff retry
-	var db *database.CockroachDB
+	var db *pkgDatabase.CockroachDB
 	var err error
 
 	maxRetries := 5
@@ -61,7 +61,7 @@ func main() {
 	maxDelay := 30 * time.Second
 
 	// Execute first connection attempt
-	db, err = database.NewCockroachDB(ctx, dbConfig)
+	db, err = pkgDatabase.NewCockroachDB(ctx, dbConfig)
 	if err == nil {
 		log.Println("✅ Connected to CockroachDB")
 	} else {
@@ -75,7 +75,7 @@ func main() {
 			time.Sleep(delay)
 
 			// Retry connection
-			db, err = database.NewCockroachDB(ctx, dbConfig)
+			db, err = pkgDatabase.NewCockroachDB(ctx, dbConfig)
 			if err == nil {
 				log.Printf("✅ Connected to CockroachDB (attempt %d/%d)", attempt, maxRetries)
 				break
@@ -99,27 +99,30 @@ func main() {
 		log.Println("✅ Connected to CockroachDB")
 	}
 
-	// 3. Initialize Redis
-	redisHost := env.GetString("REDIS_HOST", "localhost")
-	redisPort := env.GetString("REDIS_PORT", "6379")
-	redisAddr := fmt.Sprintf("%s:%s", redisHost, redisPort)
-
-	redisClient := redis.NewClient(&redis.Options{
-		Addr:     redisAddr,
+	// 3. Initialize Redis with degraded mode support
+	redisConfig := &intDatabase.RedisConfig{
+		Host:     env.GetString("REDIS_HOST", "localhost"),
+		Port:     6379,
 		Password: env.GetString("REDIS_PASSWORD", ""),
 		DB:       0,
-	})
-	defer redisClient.Close()
+		PoolSize: 10,
+		Timeout:  5 * time.Second,
+	}
 
-	// Check Redis connection
-	if err := redisClient.Ping(ctx).Err(); err != nil {
+	redisDB, err := intDatabase.NewRedisDB(redisConfig)
+	if err != nil {
 		log.Printf("Warning: Failed to connect to Redis: %v", err)
 	} else {
 		log.Println("✅ Connected to Redis")
 	}
+	defer redisDB.Close()
+
+	// Start background Redis health check
+	go redisDB.StartHealthCheck(ctx, 10*time.Second)
+	log.Println("✅ Redis health check started (10s interval)")
 
 	// 4. Initialize Push Service
-	pushTokenRepo := redisRepo.NewPushTokenRepository(redisClient)
+	pushTokenRepo := redisRepo.NewPushTokenRepository(redisDB.Client)
 
 	// Select push provider based on environment
 	var pushProvider push.Provider
@@ -185,7 +188,7 @@ func main() {
 	videoHdlr := videoHandler.NewHandler(videoSvc)
 
 	// 8. Initialize WebRTC Signaling Hub
-	signalingHub := wsHandler.NewSignalingHub(redisClient)
+	signalingHub := wsHandler.NewSignalingHub(redisDB)
 
 	// 9. Setup Gin Router
 	router := gin.New() // Don't use Default() to have full control
@@ -228,7 +231,7 @@ func main() {
 	router.GET("/metrics", middleware.MetricsHandler(appMetrics))
 
 	// Revocation checker
-	revocationChecker := middleware.NewRedisRevocationChecker(redisClient)
+	revocationChecker := middleware.NewRedisRevocationChecker(redisDB.Client)
 
 	// Video routes (all require authentication)
 	v1 := router.Group("/v1/calls")

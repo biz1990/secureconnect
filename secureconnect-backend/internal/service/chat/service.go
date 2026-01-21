@@ -27,6 +27,7 @@ type PresenceRepository interface {
 	SetUserOffline(ctx context.Context, userID uuid.UUID) error
 	RefreshPresence(ctx context.Context, userID uuid.UUID) error
 	IsUserOnline(ctx context.Context, userID uuid.UUID) (bool, error)
+	IsDegraded() bool
 }
 
 // Publisher interface
@@ -228,6 +229,15 @@ func (s *Service) GetMessages(ctx context.Context, input *GetMessagesInput) (*Ge
 
 // UpdatePresence updates user online/offline status
 func (s *Service) UpdatePresence(ctx context.Context, userID uuid.UUID, online bool) error {
+	// DEGRADED MODE: Skip presence updates when Redis is degraded
+	if s.presenceRepo.IsDegraded() {
+		logger.Warn("Presence update skipped (Redis degraded)",
+			zap.String("service", "chat-service"),
+			zap.String("user_id", userID.String()),
+			zap.Bool("online", online))
+		return nil // Return success to avoid breaking the flow
+	}
+
 	if online {
 		return s.presenceRepo.SetUserOnline(ctx, userID)
 	}
@@ -236,6 +246,14 @@ func (s *Service) UpdatePresence(ctx context.Context, userID uuid.UUID, online b
 
 // RefreshPresence keeps user status alive (heartbeat)
 func (s *Service) RefreshPresence(ctx context.Context, userID uuid.UUID) error {
+	// DEGRADED MODE: Skip presence refresh when Redis is degraded
+	if s.presenceRepo.IsDegraded() {
+		logger.Warn("Presence refresh skipped (Redis degraded)",
+			zap.String("service", "chat-service"),
+			zap.String("user_id", userID.String()))
+		return nil // Return success to avoid breaking the flow
+	}
+
 	return s.presenceRepo.RefreshPresence(ctx, userID)
 }
 

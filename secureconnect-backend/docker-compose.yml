@@ -116,10 +116,10 @@ services:
       - DB_HOST=cockroachdb # Dùng tên container DB thay vì IP (Docker DNS)
       - REDIS_HOST=redis
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
       - CASSANDRA_HOST=cassandra
-      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
       - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
       - SMTP_PORT=${SMTP_PORT:-587}
@@ -155,7 +155,7 @@ services:
       - DB_HOST=cockroachdb
       - DB_NAME=secureconnect_poc
       - REDIS_HOST=redis
-      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
       - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
       - SMTP_PORT=${SMTP_PORT:-587}
@@ -192,9 +192,9 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
     volumes:
       - app_logs:/logs
@@ -224,15 +224,15 @@ services:
       - DB_NAME=secureconnect_poc
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
       # Push Notification Provider Configuration
       - PUSH_PROVIDER=firebase
-      - FIREBASE_PROJECT_ID=chatapp-27370
-      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/firebase-adminsdk.json
+      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-your-firebase-project-id}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-/app/secrets/firebase-adminsdk.json}
     volumes:
       - app_logs:/logs
-      - ../secrets/chatapp-27370-firebase-adminsdk-fbsvc-d4681a8c2e.json:/app/secrets/firebase-adminsdk.json:ro
+      - ${FIREBASE_CREDENTIALS_PATH:-./secrets/firebase-adminsdk.json}:/app/secrets/firebase-adminsdk.json:ro
     depends_on:
       - redis
     networks:
@@ -256,10 +256,10 @@ services:
       - DB_NAME=secureconnect_poc
       - REDIS_HOST=redis
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
       - CASSANDRA_HOST=cassandra
-      - JWT_SECRET=${JWT_SECRET:-super-secret-key-please-use-longer-key}
+      - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
     volumes:
       - app_logs:/logs

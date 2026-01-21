@@ -167,6 +167,13 @@ func (h *ChatHub) run() {
 			h.conversations[client.conversationID][client] = true
 			h.mu.Unlock()
 
+			// Increment WebSocket connections gauge
+			metrics.ChatWebSocketConnections.Inc()
+
+			// Update conversation participants gauge
+			metrics.ChatConversationParticipantsTotal.WithLabelValues(client.conversationID.String()).Set(
+				float64(len(h.conversations[client.conversationID])))
+
 			// Notify others that user joined
 			h.broadcast <- &Message{
 				Type:           MessageTypeUserJoined,
@@ -199,10 +206,19 @@ func (h *ChatHub) run() {
 							delete(h.subscriptionCancels, client.conversationID)
 						}
 						delete(h.conversations, client.conversationID)
+						// Set conversation participants to 0
+						metrics.ChatConversationParticipantsTotal.WithLabelValues(client.conversationID.String()).Set(0)
+					} else {
+						// Update conversation participants gauge
+						metrics.ChatConversationParticipantsTotal.WithLabelValues(client.conversationID.String()).Set(
+							float64(len(clients)))
 					}
 				}
 			}
 			h.mu.Unlock()
+
+			// Decrement WebSocket connections gauge
+			metrics.ChatWebSocketConnections.Dec()
 
 		case message := <-h.broadcast:
 			h.mu.RLock()
@@ -212,6 +228,8 @@ func (h *ChatHub) run() {
 				for client := range clients {
 					select {
 					case client.send <- messageJSON:
+						// Increment messages sent (outbound)
+						metrics.ChatWebSocketMessagesTotal.WithLabelValues("out").Inc()
 					default:
 						// Mark for removal instead of deleting now
 						clientsToRemove = append(clientsToRemove, client)
@@ -225,9 +243,7 @@ func (h *ChatHub) run() {
 				h.mu.Lock()
 				if clients, ok := h.conversations[message.ConversationID]; ok {
 					for _, client := range clientsToRemove {
-						if _, exists := clients[client]; exists {
-							delete(clients, client)
-						}
+						delete(clients, client)
 					}
 				}
 				h.mu.Unlock()
@@ -268,6 +284,7 @@ func (h *ChatHub) subscribeToConversation(ctx context.Context, conversationID uu
 				logger.Warn("Failed to unmarshal Redis message",
 					zap.String("conversation_id", conversationID.String()),
 					zap.Error(err))
+				metrics.ChatWebSocketErrorsTotal.WithLabelValues("unmarshal_error").Inc()
 				continue
 			}
 
@@ -339,8 +356,12 @@ func (h *ChatHub) ServeWS(c *gin.Context, conversationRepo *cockroach.Conversati
 			zap.String("conversation_id", conversationID.String()),
 			zap.String("user_id", userID.String()),
 			zap.Error(err))
+		metrics.ChatWebSocketErrorsTotal.WithLabelValues("upgrade_error").Inc()
 		return
 	}
+
+	// Record successful connection
+	metrics.ChatWebSocketConnectionTotal.WithLabelValues("success").Inc()
 
 	// Create cancelable context for this client's subscription interest
 	ctx, cancel := context.WithCancel(context.Background())
@@ -382,6 +403,7 @@ func (c *Client) readPump() {
 					zap.String("conversation_id", c.conversationID.String()),
 					zap.String("user_id", c.userID.String()),
 					zap.Error(err))
+				metrics.ChatWebSocketErrorsTotal.WithLabelValues("unexpected_close").Inc()
 			}
 			break
 		}
@@ -393,8 +415,12 @@ func (c *Client) readPump() {
 				zap.String("conversation_id", c.conversationID.String()),
 				zap.String("user_id", c.userID.String()),
 				zap.Error(err))
+			metrics.ChatWebSocketErrorsTotal.WithLabelValues("unmarshal_error").Inc()
 			continue
 		}
+
+		// Increment messages received (inbound)
+		metrics.ChatWebSocketMessagesTotal.WithLabelValues("in").Inc()
 
 		// Set metadata
 		msg.SenderID = c.userID
@@ -425,17 +451,20 @@ func (c *Client) writePump() {
 
 			w, err := c.conn.NextWriter(websocket.TextMessage)
 			if err != nil {
+				metrics.ChatWebSocketErrorsTotal.WithLabelValues("write_error").Inc()
 				return
 			}
 			w.Write(message)
 
 			if err := w.Close(); err != nil {
+				metrics.ChatWebSocketErrorsTotal.WithLabelValues("write_error").Inc()
 				return
 			}
 
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				metrics.ChatWebSocketErrorsTotal.WithLabelValues("ping_error").Inc()
 				return
 			}
 		}

@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -10,16 +10,20 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 
+	"secureconnect-backend/internal/database"
 	"secureconnect-backend/internal/middleware"
-	"secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/env"
 	"secureconnect-backend/pkg/jwt"
+	"secureconnect-backend/pkg/logger"
 	"secureconnect-backend/pkg/metrics"
 )
 
 func main() {
-	// Initialize context
+	// Initialize logger with service name
+	logger.InitDefault("api-gateway")
+	defer logger.Sync()
 
 	// 1. Connect to Redis (for rate limiting)
 	redisConfig := &database.RedisConfig{
@@ -33,24 +37,34 @@ func main() {
 
 	redisDB, err := database.NewRedisDB(redisConfig)
 	if err != nil {
-		log.Fatalf("Failed to connect to Redis: %v", err)
+		logger.Fatal("Failed to connect to Redis")
 	}
 	defer redisDB.Close()
 
-	log.Println("✅ API Gateway connected to Redis")
+	logger.Info("API Gateway connected to Redis")
+
+	// Start background Redis health check
+	go redisDB.StartHealthCheck(context.Background(), 10*time.Second)
+	logger.Info("Redis health check started (10s interval)")
 
 	// 2. Setup JWT Manager (for optional auth in gateway)
 	jwtSecret := env.GetString("JWT_SECRET", "")
 	if jwtSecret == "" {
-		log.Fatal("JWT_SECRET environment variable is required")
+		logger.Fatal("JWT_SECRET environment variable is required")
 	}
 	if len(jwtSecret) < 32 {
-		log.Fatal("JWT_SECRET must be at least 32 characters")
+		logger.Fatal("JWT_SECRET must be at least 32 characters")
 	}
 	jwtManager := jwt.NewJWTManager(jwtSecret, 15*time.Minute, 30*24*time.Hour)
 
-	// 3. Setup advanced rate limiter with per-endpoint configuration
-	rateLimiter := middleware.NewAdvancedRateLimiter(redisDB.Client)
+	// 3. Setup advanced rate limiter with per-endpoint configuration and degraded mode support
+	// DEGRADED MODE: Enable in-memory fallback when Redis is unavailable
+	rateLimiter := middleware.NewRateLimiterWithFallback(middleware.RateLimiterConfig{
+		RedisClient:            redisDB,
+		RequestsPerMin:         100,
+		Window:                 time.Minute,
+		EnableInMemoryFallback: true, // Enable in-memory rate limiting when Redis is degraded
+	})
 
 	// 4. Initialize Metrics
 	appMetrics := metrics.NewMetrics("api-gateway")
@@ -97,7 +111,10 @@ func main() {
 		})
 	})
 
-	// 9. Swagger documentation
+	// 7. Metrics endpoint (for Prometheus scraping - no auth required)
+	router.GET("/metrics", middleware.MetricsHandler(appMetrics))
+
+	// 8. Swagger documentation
 	router.GET("/swagger", func(c *gin.Context) {
 		c.File("./api/swagger/openapi.yaml")
 	})
@@ -215,18 +232,21 @@ func main() {
 	port := env.GetString("PORT", "8080")
 	addr := fmt.Sprintf(":%s", port)
 
-	log.Printf("🚀 API Gateway starting on port %s\n", port)
-	log.Println("📍 Routes:")
-	log.Println("   - Auth: /v1/auth/*")
-	log.Println("   - Users: /v1/users/*")
-	log.Println("   - Conversations: /v1/conversations/*")
-	log.Println("   - Keys: /v1/keys/*")
-	log.Println("   - Chat: /v1/messages, /v1/ws/chat")
-	log.Println("   - Calls: /v1/calls/*, /v1/ws/signaling")
-	log.Println("   - Storage: /v1/storage/*")
+	logger.Info("API Gateway starting",
+		zap.String("port", port),
+	)
+	logger.Info("Routes configured",
+		zap.String("auth", "/v1/auth/*"),
+		zap.String("users", "/v1/users/*"),
+		zap.String("conversations", "/v1/conversations/*"),
+		zap.String("keys", "/v1/keys/*"),
+		zap.String("chat", "/v1/messages, /v1/ws/chat"),
+		zap.String("calls", "/v1/calls/*, /v1/ws/signaling"),
+		zap.String("storage", "/v1/storage/*"),
+	)
 
 	if err := router.Run(addr); err != nil {
-		log.Fatalf("Failed to start API Gateway: %v", err)
+		logger.Fatal("Failed to start API Gateway")
 	}
 }
 
@@ -258,7 +278,10 @@ func proxyToService(serviceName string, port int) gin.HandlerFunc {
 
 		// Handle errors - write directly to response writer
 		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("Proxy error for %s: %v", serviceName, err)
+			logger.Error("Proxy error",
+				zap.String("service", serviceName),
+				zap.Error(err),
+			)
 			w.WriteHeader(http.StatusBadGateway)
 			w.Write([]byte(`{"error":"Service unavailable","service":"` + serviceName + `"}`))
 		}

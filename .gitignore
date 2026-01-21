@@ -6,10 +6,19 @@ certs/
 ca.key
 firebase*.json
 
-# Environment files
-.env.production
+# Environment files - ALL variants
+.env
+.env.*
+!.env.*.example
 .env.local
+.env.production
+.env.staging
+.env.development
 .env.*.local
+
+# Keep only example files
+!.env.example
+!.env.*.example
 
 # Logs
 *.log
