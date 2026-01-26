@@ -1,0 +1,119 @@
+server:
+  http_listen_port: 9080
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+positions:
+  filename: tmp/positions.yaml
+
+scrape_configs:
+  # API Gateway logs
+  - job_name: api-gateway
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+            job: api-gateway
+            service: api-gateway
+            __path__: logs/api-gateway.log
+    pipeline_stages:
+      - json:
+          expressions:
+              level: level
+              message: message
+              service: service
+              request_id: request_id
+      - labels:
+              level:
+              service:
+      - output:
+          source: stdout
+
+  # Auth Service logs
+  - job_name: auth-service
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+            job: auth-service
+            service: auth-service
+            __path__: logs/auth-service.log
+    pipeline_stages:
+      - json:
+          expressions:
+              level: level
+              message: message
+              service: service
+              request_id: request_id
+      - labels:
+              level:
+              service:
+      - output:
+          source: stdout
+
+  # Chat Service logs
+  - job_name: chat-service
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+            job: chat-service
+            service: chat-service
+            __path__: logs/chat-service.log
+    pipeline_stages:
+      - json:
+          expressions:
+              level: level
+              message: message
+              service: service
+              request_id: request_id
+      - labels:
+              level:
+              service:
+      - output:
+          source: stdout
+
+  # Video Service logs
+  - job_name: video-service
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+            job: video-service
+            service: video-service
+            __path__: logs/video-service.log
+    pipeline_stages:
+      - json:
+          expressions:
+              level: level
+              message: message
+              service: service
+              request_id: request_id
+      - labels:
+              level:
+              service:
+      - output:
+          source: stdout
+
+  # Storage Service logs
+  - job_name: storage-service
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+            job: storage-service
+            service: storage-service
+            __path__: logs/storage-service.log
+    pipeline_stages:
+      - json:
+          expressions:
+              level: level
+              message: message
+              service: service
+              request_id: request_id
+      - labels:
+              level:
+              service:
+      - output:
+          source: stdout

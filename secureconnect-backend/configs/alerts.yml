@@ -1,0 +1,121 @@
+groups:
+  - name: service_health
+    interval: 30s
+    rules:
+      # Service is down
+      - alert: ServiceDown
+        expr: up == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: service
+
+      # Service is unhealthy
+      - alert: ServiceUnhealthy
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: service
+
+  - name: error_rate
+    interval: 1m
+    rules:
+      # High HTTP error rate (> 5%)
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(http_requests_total{status=~"5.."}[5m])
+            /
+            rate(http_requests_total[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: http
+
+      # High database error rate
+      - alert: HighDBErrorRate
+        expr: |
+          (
+            rate(db_query_errors_total[5m])
+            /
+            rate(http_requests_total[5m])
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+
+      # High Redis error rate
+      - alert: HighRedisErrorRate
+        expr: |
+          (
+            rate(redis_errors_total[5m])
+            /
+            rate(http_requests_total[5m])
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+
+  - name: redis_degraded
+    interval: 1m
+    rules:
+      # Redis in degraded mode
+      - alert: RedisDegradedMode
+        expr: redis_connections < 1
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+
+  - name: high_latency
+    interval: 1m
+    rules:
+      # High HTTP latency (> 500ms)
+      - alert: HighHTTPLatency
+        expr: |
+          histogram_quantile(0.95, rate(http_request_duration_seconds_sum[5m], rate(http_requests_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: http
+
+      # High database query latency (> 500ms)
+      - alert: HighDBLatency
+        expr: |
+          histogram_quantile(0.95, rate(db_query_duration_seconds_sum[5m], rate(http_requests_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+
+      # High Redis command latency (> 200ms)
+      - alert: HighRedisLatency
+        expr: |
+          histogram_quantile(0.95, rate(redis_command_duration_seconds_sum[5m], rate(redis_commands_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+
+  - name: resource_usage
+    interval: 1m
+    rules:
+      # High WebSocket connections (> 1000)
+      - alert: HighWebSocketConnections
+        expr: websocket_connections > 1000
+        for: 5m
+        labels:
+          severity: info
+          component: websocket
+
+      # High active calls (> 100)
+      - alert: HighActiveCalls
+        expr: calls_active > 100
+        for: 5m
+        labels:
+          severity: info
+          component: webrtc

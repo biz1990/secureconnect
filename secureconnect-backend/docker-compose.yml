@@ -1,0 +1,443 @@
+version: '3.8'
+
+# --- NETWORKS ---
+networks:
+  secureconnect-net:
+    driver: bridge
+
+# --- VOLUMES (Lưu trữ dữ liệu ổ cứng) ---
+volumes:
+  crdb_data:
+  cassandra_data:
+  redis_data:
+  minio_data:
+  app_logs:
+
+    # --- SERVICES ---
+services:
+
+  # 1. DATABASE: COCKROACHDB (SQL)
+  cockroachdb:
+    image: cockroachdb/cockroach:v23.1.0
+    container_name: secureconnect_crdb
+    ports:
+      - "26257:26257" # SQL Port
+      - "8081:8080" # UI Admin
+    command: start-single-node --insecure
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_DB=secureconnect_poc
+      - COCKROACH_MAX_OFFSET_MEMORY=2GB # Quan trọng: Giới hạn cache RAM
+    volumes:
+      - crdb_data:/cockroach/cockroach-data
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health?ready=1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. DATABASE: CASSANDRA (NoSQL)
+  cassandra:
+    image: cassandra:latest
+    container_name: secureconnect_cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=SecConnectCluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_RACK=rack1
+      - MAX_HEAP_SIZE=1024M # Quan trọng: Giới hạn Heap để dành RAM cho App (Máy 8GB)
+      - HEAP_NEWSIZE=100M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "cqlsh -e 'describe cluster'" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # 3. CACHE: REDIS
+  redis:
+    image: redis:7-alpine
+    container_name: secureconnect_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - secureconnect-net
+    command: redis-server --appendonly yes --save 900 1
+    restart: always
+
+  # 4. STORAGE: MINIO (Object Storage)
+  minio:
+    image: minio/minio
+    container_name: secureconnect_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # UI Console
+    volumes:
+      - minio_data:/data
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  # --- 5. BACKEND SERVICES (GO MICROSERVICES) ---
+  # Sử dụng Dockerfile ở Root để build
+
+  # 5.1. API GATEWAY
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: api-gateway
+        CMD: ./cmd/api-gateway
+    container_name: api-gateway
+    env_file:
+      - .env.local
+    ports:
+      - "8080:8080"
+    environment:
+      - ENV=local
+      - DB_HOST=cockroachdb # Dùng tên container DB thay vì IP (Docker DNS)
+      - REDIS_HOST=redis
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - CASSANDRA_HOST=cassandra
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
+      - APP_URL=${APP_URL:-http://localhost:9090}
+    volumes:
+      - ./configs:/app/configs # Mount configs để đọc (nếu cần)
+      - app_logs:/logs
+    depends_on:
+      - cockroachdb
+      - cassandra
+      - redis
+      - minio
+    networks:
+      - secureconnect-net
+    mem_limit: 256m # Giới hạn RAM nhỏ cho Gateway (Reverse proxy nhẹ)
+    cpus: '0.5' # Giới hạn CPU để dành cho App khác
+    restart: on-failure
+
+  # 5.2. AUTH SERVICE
+  auth-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: auth-service
+        CMD: ./cmd/auth-service
+    container_name: auth-service
+    env_file:
+      - .env.local
+    environment:
+      - ENV=local
+      - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
+      - REDIS_HOST=redis
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-noreply@secureconnect.com}
+      - APP_URL=${APP_URL:-http://localhost:9090}
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      - cockroachdb
+      - redis
+    networks:
+      - secureconnect-net
+    mem_limit: 256m
+    cpus: '0.5'
+    restart: on-failure
+
+  # 5.3. CHAT SERVICE
+  chat-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: chat-service
+        CMD: ./cmd/chat-service
+    container_name: chat-service
+    env_file:
+      - .env.local
+    ports:
+      - "8082:8082" # Expose port 8082
+    environment:
+      - ENV=local
+      - COCKROACH_HOST=cockroachdb
+      - COCKROACH_PORT=26257
+      - COCKROACH_USER=root
+      - COCKROACH_PASSWORD=
+      - COCKROACH_DATABASE=secureconnect_poc
+      - COCKROACH_SSLMODE=disable
+      - CASSANDRA_HOST=cassandra
+      - CASSANDRA_KEYSPACE=secureconnect_ks
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      - cockroachdb
+      - cassandra
+      - redis
+      - minio
+    networks:
+      - secureconnect-net
+    mem_limit: 512m # Chat cần RAM hơn (caching messages)
+    cpus: '0.5'
+    restart: on-failure
+
+  # 5.4. VIDEO SERVICE (SFU/Pion)
+  # LƯU Ý: Nếu máy bạn chỉ 2 Core, hãy tắt service này (comment) để tiết kiệm CPU.
+  video-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: video-service
+        CMD: ./cmd/video-service
+    container_name: video-service
+    env_file:
+      - .env.local
+    environment:
+      - ENV=local
+      - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      # Push Notification Provider Configuration
+      - PUSH_PROVIDER=firebase
+      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-your-firebase-project-id}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      - redis
+    networks:
+      - secureconnect-net
+    mem_limit: 512m
+    cpus: '1.0' # SFU cần CPU để xử lý Media Stream
+    restart: on-failure
+
+  # 5.5. STORAGE SERVICE
+  storage-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: storage-service
+        CMD: ./cmd/storage-service
+    container_name: storage-service
+    env_file:
+      - .env.local
+    environment:
+      - ENV=local
+      - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
+      - REDIS_HOST=redis
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - CASSANDRA_HOST=cassandra
+      - JWT_SECRET=${JWT_SECRET}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      - cockroachdb
+      - redis
+      - minio
+    networks:
+      - secureconnect-net
+    mem_limit: 256m
+    cpus: '0.5'
+    restart: on-failure
+
+  # 6. LOAD BALANCER (NGINX)
+  gateway:
+    image: nginx:alpine
+    container_name: secureconnect_nginx
+    ports:
+      - "9090:80" # HTTP Public (changed from 80 to 9090 for Windows compatibility)
+      - "9443:443" # HTTPS Public (changed from 443 to 9443 for Windows compatibility)
+    volumes:
+      # Mount file config nginx.conf vào thư mục configs
+      - ./configs/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - api-gateway
+      - chat-service
+      - auth-service
+      - video-service
+    networks:
+      - secureconnect-net
+    restart: always
+
+# version: '3.8'
+
+# services:
+#   # --- 1. DATABASES ---
+#   cockroachdb:
+#     image: cockroachdb/cockroach:v23.1.0
+#     command: start-single-node --insecure
+#     ports:
+#       - "26257:26257"
+#       - "8080:8080"
+#     volumes:
+#       - crdb_data:/cockroach/cockroach-data
+#     networks:
+#       - secureconnect-net
+
+#   cassandra:
+#     image: cassandra:latest
+#     ports:
+#       - "9042:9042"
+#     volumes:
+#       - cassandra_data:/var/lib/cassandra
+#     networks:
+#       - secureconnect-net
+
+#   redis:
+#     image: redis:7-alpine
+#     ports:
+#       - "6379:6379"
+#     volumes:
+#       - redis_data:/data
+#     networks:
+#       - secureconnect-net
+
+#   # --- 2. APPLICATIONS (Go) ---
+#   # Lưu ý: Vì Dockerfile ở root, context là `.` (thư mục hiện tại)
+
+#   api-gateway:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile
+#       args:
+#         SERVICE_NAME: api-gateway
+#         CMD: ./cmd/api-gateway
+#     image: secureconnect/api-gateway:latest
+#     ports:
+#       - "8080:8080"
+#     environment:
+#       - ENV=development
+#       - DB_HOST=cockroachdb
+#       - REDIS_HOST=redis
+#       - MINIO_ENDPOINT=http://minio:9000
+#     depends_on:
+#       - cockroachdb
+#       - redis
+#       - minio
+#     networks:
+#       - secureconnect-net
+#     restart: unless-stopped
+
+#   auth-service:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile
+#       args:
+#         SERVICE_NAME: auth-service
+#         CMD: ./cmd/auth-service
+#     image: secureconnect/auth-service:latest
+#     environment:
+#       - DB_HOST=cockroachdb
+#       - REDIS_HOST=redis
+#     depends_on:
+#       - cockroachdb
+#       - redis
+#     networks:
+#       - secureconnect-net
+#     restart: unless-stopped
+
+#   chat-service:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile
+#       args:
+#         SERVICE_NAME: chat-service
+#         CMD: ./cmd/chat-service
+#     image: secureconnect/chat-service:latest
+#     environment:
+#       - CASSANDRA_HOST=cassandra
+#       - REDIS_HOST=redis
+#     depends_on:
+#       - cassandra
+#       - redis
+#     networks:
+#       - secureconnect-net
+#     restart: unless-stopped
+
+#   # --- 3. STORAGE ---
+#   minio:
+#     image: minio/minio:latest
+#     command: server /data --console-address ":9001"
+#     ports:
+#       - "9000:9000"
+#       - "9001:9001"
+#     volumes:
+#       - minio_data:/data
+#     environment:
+#       MINIO_ROOT_USER: minioadmin
+#       MINIO_ROOT_PASSWORD: minioadmin
+#     networks:
+#       - secureconnect-net
+
+#   # --- 4. LOAD BALANCER ---
+#   gateway:
+#     image: nginx:alpine
+#     ports:
+#       - "80:80"
+#     volumes:
+#       - ./configs/nginx.conf:/etc/nginx/conf.d/default.conf
+#     depends_on:
+#       - api-gateway
+#       - auth-service
+#       - chat-service
+#     networks:
+#       - secureconnect-net
+
+# volumes:
+#   crdb_data:
+#   cassandra_data:
+#   redis_data:
+#   minio_data:
+
+# networks:
+#   secureconnect-net:
+#     driver: bridge

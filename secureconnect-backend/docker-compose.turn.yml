@@ -1,0 +1,211 @@
+version: '3.8'
+
+# =============================================================================
+# DOCKER COMPOSE - TURN SERVER PROFILE
+# =============================================================================
+# This file enables the TURN server for production and WebRTC testing.
+#
+# USAGE:
+#   docker-compose -f docker-compose.yml -f docker-compose.turn.yml up
+#   OR
+#   docker-compose --profile production up
+#
+# =============================================================================
+
+# Production Profile - TURN ENABLED
+profiles:
+  production:
+    # Full TURN server with relay capabilities
+    # Suitable for production deployment and NAT traversal testing
+
+services:
+  # ============================================
+  # TURN/STUN SERVER (Coturn) - PRODUCTION PROFILE
+  # ============================================
+  # This service is ONLY enabled when using the production profile.
+  # It provides full TURN relay capabilities for WebRTC NAT traversal.
+  #
+  # RESOURCE USAGE:
+  # - CPU: Moderate (packet forwarding)
+  # - RAM: Low-Moderate (connection tracking)
+  # - Ports: 100 relay ports (50000-50100)
+  # - Disk: Moderate (logging)
+  #
+  # WINDOWS COMPATIBILITY:
+  # - This profile should NOT be used on Windows Docker Desktop
+  # - Use Linux/macOS or cloud deployment instead
+  # - For Windows testing, use STUN-only mode (default)
+  #
+  turn:
+    image: coturn/coturn:4.6.2-alpine
+    container_name: secureconnect_turn
+    profiles:
+      - production # Only enabled with --profile production
+    ports:
+      # STUN/TURN ports
+      - "3478:3478/udp" # STUN/TURN (UDP)
+      - "3478:3478/tcp" # STUN/TURN (TCP)
+      - "3479:3479/udp" # STUN/TURN alt port (UDP)
+      - "3479:3479/tcp" # STUN/TURN alt port (TCP)
+      # TURN TLS (production only)
+      - "5349:5349/tcp" # TURN TLS
+      - "5350:5350/tcp" # TURN TLS alt port
+      # Relay ports (reduced range for resource safety)
+      # Using 50000-50100 (100 ports) instead of full 49152-65535 range
+      # This prevents 100% CPU/RAM/Disk usage on production servers
+      - "50000-50100:50000-50100/udp"
+    environment:
+      # TURN Authentication Credentials
+      # Set via .env.production or environment variables
+      - TURN_USER=${TURN_USER:-turnuser}
+      - TURN_PASSWORD=${TURN_PASSWORD:-turnpassword}
+      - TURN_REALM=${TURN_REALM:-secureconnect}
+      # External IP (required for production)
+      # Set to your server's public IP
+      - EXTERNAL_IP=${EXTERNAL_IP:-}
+    volumes:
+      # Mount production configuration
+      - ./configs/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - turn_data:/var/lib/coturn
+      - app_logs:/var/log/turnserver
+      # TLS certificates (required for production)
+      - ./certs:/etc/coturn/certs:ro
+    networks:
+      - secureconnect-net
+    # Command with production settings
+    command: >
+      sh -c 'if [ -n "$$EXTERNAL_IP" ]; then
+        turnserver -c /etc/coturn/turnserver.conf
+          --external-ip=$$EXTERNAL_IP
+          --user=$$(cat /run/secrets/turn_user 2>/dev/null || echo "$$TURN_USER"):$$(cat /run/secrets/turn_password 2>/dev/null || echo "$$TURN_PASSWORD")
+          --realm=$$TURN_REALM
+          --verbose;
+      else
+        turnserver -c /etc/coturn/turnserver.conf
+          --user=$$(cat /run/secrets/turn_user 2>/dev/null || echo "$$TURN_USER"):$$(cat /run/secrets/turn_password 2>/dev/null || echo "$$TURN_PASSWORD")
+          --realm=$$TURN_REALM
+          --verbose;
+      fi'
+    restart: always
+    # Resource limits for production safety
+    mem_limit: 512m
+    cpus: '1.0'
+    healthcheck:
+      test: [ "CMD", "turnutils_uclient", "-u", "test", "-w", "test", "127.0.0.1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ============================================
+  # API GATEWAY - PRODUCTION OVERRIDES
+  # ============================================
+  api-gateway:
+    environment:
+      # Enable TURN for production
+      - TURN_ENABLED=true
+      # STUN servers (always available)
+      - STUN_SERVERS=stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302
+      # TURN server configuration
+      - TURN_SERVER_HOST=turn
+      - TURN_SERVER_PORT=3478
+      - TURN_USER=${TURN_USER:-turnuser}
+      - TURN_PASSWORD=${TURN_PASSWORD:-turnpassword}
+      - TURN_REALM=${TURN_REALM:-secureconnect}
+    # Add TURN dependency for production
+    depends_on:
+      - cockroachdb
+      - cassandra
+      - redis
+      - minio
+      - turn
+
+  # ============================================
+  # VIDEO SERVICE - PRODUCTION OVERRIDES
+  # ============================================
+  video-service:
+    environment:
+      # Enable TURN for production
+      - TURN_ENABLED=true
+      # ICE servers with TURN
+      - ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:turn:3478"],"username":"${TURN_USER:-turnuser}","credential":"${TURN_PASSWORD:-turnpassword}"}]
+    # Add TURN dependency for production
+    depends_on:
+      - cockroachdb
+      - redis
+      - turn
+
+  # ============================================
+  # GATEWAY (NGINX) - PRODUCTION OVERRIDES
+  # ============================================
+  gateway:
+    depends_on:
+      - api-gateway
+      - chat-service
+      - auth-service
+      - video-service
+      - turn
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  turn_data:
+
+    # =============================================================================
+    # NETWORKS
+    # =============================================================================
+networks:
+  secureconnect-net:
+    driver: bridge
+
+# =============================================================================
+# USAGE INSTRUCTIONS
+# =============================================================================
+#
+# 1. START WITH TURN (PRODUCTION PROFILE):
+#    docker-compose --profile production up
+#
+# 2. START WITH TURN USING OVERRIDE FILES:
+#    docker-compose -f docker-compose.yml -f docker-compose.turn.yml up
+#
+# 3. START WITH TURN ON SPECIFIC SERVER:
+#    EXTERNAL_IP=203.0.113.1 docker-compose --profile production up
+#
+# 4. START WITH TURN USING ENVIRONMENT FILE:
+#    docker-compose --env-file .env.production --profile production up
+#
+# =============================================================================
+# ENVIRONMENT VARIABLES
+# =============================================================================
+#
+# REQUIRED FOR PRODUCTION:
+# - EXTERNAL_IP: Your server's public IP address
+# - TURN_USER: TURN authentication username
+# - TURN_PASSWORD: TURN authentication password
+# - TURN_REALM: Authentication realm (default: secureconnect)
+#
+# OPTIONAL:
+# - TURN_ENABLED: Override to false to disable TURN (default: true)
+#
+# =============================================================================
+# SECURITY NOTES
+# =============================================================================
+#
+# 1. TLS CERTIFICATES:
+#    - Required for production TURN server
+#    - Place certificates in ./certs directory
+#    - Files: cert.pem, pkey.pem, ca.pem
+#
+# 2. FIREWALL RULES:
+#    - Allow UDP 3478-3479 (STUN/TURN)
+#    - Allow TCP 3478-3479 (STUN/TURN)
+#    - Allow TCP 5349-5350 (TURN TLS)
+#    - Allow UDP 50000-50100 (Relay ports)
+#
+# 3. CREDENTIALS:
+#    - Use strong passwords for TURN_USER and TURN_PASSWORD
+#    - Rotate credentials regularly
+#    - Store in .env.production file (not committed to git)
+#
+# =============================================================================

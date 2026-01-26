@@ -1,0 +1,128 @@
+version: '3.8'
+
+# =============================================================================
+# DOCKER COMPOSE OVERRIDE - LOCAL DEVELOPMENT PROFILE
+# =============================================================================
+# This file overrides the base docker-compose.yml to disable TURN server
+# by default for local development on Windows machines.
+#
+# PROBLEM: TURN server (coturn) can cause 100% CPU/RAM/Disk usage on Windows
+#          when running in Docker Desktop, leading to machine freezes.
+#
+# SOLUTION: Disable TURN by default. Enable only when needed for WebRTC testing.
+#
+# =============================================================================
+
+# Local Development Profile - TURN DISABLED (default)
+profiles:
+  local-dev:
+    # TURN server is disabled in this profile
+    # Services that depend on TURN will use STUN-only or loopback addresses
+    # This prevents resource exhaustion on Windows development machines
+
+services:
+  # ============================================
+  # TURN SERVER - DISABLED BY DEFAULT
+  # ============================================
+  # The TURN server is disabled in local-dev profile to prevent:
+  # - 100% CPU usage on Windows Docker Desktop
+  # - Memory exhaustion from relay port allocations
+  # - Disk I/O saturation from log writes
+  # - Network port conflicts with Windows reserved ports
+  #
+  # To enable TURN for WebRTC testing:
+  # 1. Use PROFILE=production: docker-compose --profile production up
+  # 2. Or use docker-compose.turn.yml: docker-compose -f docker-compose.yml -f docker-compose.turn.yml up
+  #
+  turn:
+    profiles:
+      - production # Only enabled in production profile
+    # When enabled, TURN will use the configuration from base docker-compose.yml
+
+    # ============================================
+    # API GATEWAY - LOCAL DEV OVERRIDES
+    # ============================================
+  api-gateway:
+    environment:
+      # Override TURN configuration for local development
+      # Use STUN-only (no relay) to prevent resource issues
+      - TURN_ENABLED=${TURN_ENABLED:-false}
+      # STUN servers (free, no resource impact)
+      - STUN_SERVERS=stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302
+      # TURN configuration (disabled by default)
+      - TURN_SERVER_HOST=${TURN_SERVER_HOST:-}
+      - TURN_SERVER_PORT=${TURN_SERVER_PORT:-3478}
+      - TURN_USER=${TURN_USER:-}
+      - TURN_PASSWORD=${TURN_PASSWORD:-}
+    # Remove TURN dependency for local dev
+    depends_on:
+      - cockroachdb
+      - cassandra
+      - redis
+      - minio
+
+  # ============================================
+  # VIDEO SERVICE - LOCAL DEV OVERRIDES
+  # ============================================
+  video-service:
+    environment:
+      # Override ICE configuration for local development
+      # Use STUN-only for peer-to-peer connections
+      - TURN_ENABLED=${TURN_ENABLED:-false}
+      # STUN servers (free, no resource impact)
+      - ICE_SERVERS=[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["stun:stun1.l.google.com:19302"]}]
+      # TURN configuration (disabled by default)
+      - TURN_SERVER_HOST=${TURN_SERVER_HOST:-}
+      - TURN_SERVER_PORT=${TURN_SERVER_PORT:-3478}
+      - TURN_USER=${TURN_USER:-}
+      - TURN_PASSWORD=${TURN_PASSWORD:-}
+    # Remove TURN dependency for local dev
+    depends_on:
+      - cockroachdb
+      - redis
+
+  # ============================================
+  # GATEWAY (NGINX) - LOCAL DEV OVERRIDES
+  # ============================================
+  gateway:
+    depends_on:
+      - api-gateway
+      - chat-service
+      - auth-service
+      - video-service
+      # TURN removed from dependencies for local dev
+
+      # =============================================================================
+      # USAGE INSTRUCTIONS
+      # =============================================================================
+      #
+      # 1. START WITHOUT TURN (DEFAULT - SAFE FOR WINDOWS):
+      #    docker-compose up
+      #
+      # 2. START WITH TURN (FOR WEBRTC TESTING):
+      #    docker-compose --profile production up
+      #
+      # 3. START WITH TURN USING ENVIRONMENT VARIABLE:
+      #    TURN_ENABLED=true docker-compose up
+      #
+      # 4. START SPECIFIC SERVICES WITHOUT TURN:
+      #    docker-compose up api-gateway auth-service chat-service video-service
+      #
+      # =============================================================================
+      # WHY TURN IS DISABLED BY DEFAULT
+      # =============================================================================
+      #
+      # WINDOWS DOCKER DESKTOP ISSUES:
+      # - Coturn reserves 100+ UDP relay ports (50000-50100)
+      # - Windows reserves ports 49152-65535 for ephemeral use
+      # - Port conflicts cause 100% CPU usage
+      # - Memory leaks in Docker Desktop's NAT implementation
+      # - Disk I/O saturation from verbose TURN logging
+      #
+      # SAFE LOCAL DEVELOPMENT:
+      # - Use STUN servers (stun.l.google.com:19302) for P2P
+      # - Test WebRTC with peers on same network
+      # - Enable TURN only when testing NAT traversal
+      # - Use production TURN server for real-world testing
+      #
+      # =============================================================================

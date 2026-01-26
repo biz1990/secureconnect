@@ -1,0 +1,1694 @@
+openapi: 3.0.3
+info:
+  title: SecureConnect API
+  description: |
+    Production-ready API specification for SecureConnect platform.
+    Based on actual implementation in Go microservices architecture.
+  version: 1.0.0
+  contact:
+    name: SecureConnect Team
+    email: dev@secureconnect.com
+
+servers:
+  - url: http://localhost:9090/v1
+    description: Local Development
+  - url: https://api.secureconnect.com/v1
+    description: Production Server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Auth
+    description: Authentication & Authorization
+  - name: Users
+    description: User Management
+  - name: Keys
+    description: E2EE Key Management
+  - name: Messages
+    description: Messaging & Chat
+  - name: Conversations
+    description: Conversation Management
+  - name: Calls
+    description: Video/Audio Calls
+  - name: Storage
+    description: File Storage
+  - name: Presence
+    description: User Presence
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # --- Common Models ---
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: Invalid input
+            details:
+              type: object
+              additionalProperties: true
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+        meta:
+          type: object
+          properties:
+            timestamp:
+              type: string
+              format: date-time
+            request_id:
+              type: string
+
+    # --- User Models ---
+    User:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        email:
+          type: string
+          format: email
+          example: "alice@example.com"
+        username:
+          type: string
+          example: "alice_wonder"
+        display_name:
+          type: string
+          example: "Alice"
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        status:
+          type: string
+          enum: [online, offline, busy]
+          example: "online"
+        created_at:
+          type: string
+          format: date-time
+          example: "2023-10-27T10:00:00Z"
+
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - username
+        - password
+        - display_name
+      properties:
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+          minLength: 3
+          maxLength: 30
+        password:
+          type: string
+          format: password
+          minLength: 8
+        display_name:
+          type: string
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+
+    AuthResponse:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+
+    # --- Message Models ---
+    Message:
+      type: object
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        sender_id:
+          type: string
+          format: uuid
+        sender_name:
+          type: string
+          description: Username of sender (joined from users table)
+        content:
+          type: string
+          description: Base64 ciphertext if encrypted, plaintext otherwise
+        is_encrypted:
+          type: boolean
+        message_type:
+          type: string
+          enum: [text, image, video, file]
+        metadata:
+          type: object
+          nullable: true
+          description: AI results or file info
+        created_at:
+          type: string
+          format: date-time
+
+    SendMessageRequest:
+      type: object
+      required:
+        - conversation_id
+        - content
+        - message_type
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        content:
+          type: string
+        is_encrypted:
+          type: boolean
+          default: false
+        message_type:
+          type: string
+          enum: [text, image, video, file]
+          default: text
+        metadata:
+          type: object
+          nullable: true
+
+    # --- Conversation Models ---
+    Conversation:
+      type: object
+      properties:
+        conversation_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [direct, group]
+        title:
+          type: string
+          description: Conversation title (for groups)
+        name:
+          type: string
+          description: Group chat name (for groups)
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        created_by:
+          type: string
+          format: uuid
+        created_at:
+          type: string
+          format: date-time
+        participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationParticipant'
+        is_e2ee_enabled:
+          type: boolean
+          description: E2EE enabled flag
+        unread_count:
+          type: integer
+
+    ConversationParticipant:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [admin, member]
+        joined_at:
+          type: string
+          format: date-time
+
+    ConversationParticipantDetail:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role:
+          type: string
+          enum: [admin, member]
+        joined_at:
+          type: string
+          format: date-time
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          format: uri
+          nullable: true
+        status:
+          type: string
+          enum: [online, offline, busy]
+
+    ConversationSettings:
+      type: object
+      properties:
+        is_e2ee_enabled:
+          type: boolean
+
+    CreateConversationRequest:
+      type: object
+      required:
+        - type
+        - participant_ids
+      properties:
+        type:
+          type: string
+          enum: [direct, group]
+        participant_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 2
+        is_e2ee_enabled:
+          type: boolean
+          default: true
+
+    # --- Call Models ---
+    Call:
+      type: object
+      properties:
+        call_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        caller_id:
+          type: string
+          format: uuid
+        call_type:
+          type: string
+          enum: [audio, video]
+        status:
+          type: string
+          enum: [ringing, active, ended]
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+        duration:
+          type: integer
+          description: Duration in seconds
+
+    InitiateCallRequest:
+      type: object
+      required:
+        - call_type
+        - conversation_id
+        - callee_ids
+      properties:
+        call_type:
+          type: string
+          enum: [audio, video]
+        conversation_id:
+          type: string
+          format: uuid
+        callee_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          minItems: 1
+
+    # --- Storage Models ---
+    UploadURLRequest:
+      type: object
+      required:
+        - file_name
+        - file_size
+        - content_type
+      properties:
+        file_name:
+          type: string
+        file_size:
+          type: integer
+          format: int64
+        content_type:
+          type: string
+        is_encrypted:
+          type: boolean
+          default: false
+
+    UploadURLResponse:
+      type: object
+      properties:
+        file_id:
+          type: string
+          format: uuid
+        upload_url:
+          type: string
+          format: uri
+        expires_at:
+          type: string
+          format: date-time
+
+    StorageQuota:
+      type: object
+      properties:
+        used:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+        available:
+          type: integer
+          format: int64
+        usage_percentage:
+          type: number
+          format: float
+
+    # --- Presence Models ---
+    UpdatePresenceRequest:
+      type: object
+      required:
+        - online
+      properties:
+        online:
+          type: boolean
+
+paths:
+  # --- Auth Endpoints ---
+  /auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Register a new user account
+      description: Create a new user account with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Email or username already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      summary: User login
+      description: Authenticate user and receive access/refresh tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Refresh access token
+      description: Get a new access token using refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refresh_token
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          access_token:
+                            type: string
+                          refresh_token:
+                            type: string
+        '401':
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: User logout
+      description: Invalidate current session and token
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /auth/profile:
+    get:
+      tags:
+        - Auth
+      summary: Get current user profile
+      description: Retrieve profile information from JWT token
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          user_id:
+                            type: string
+                            format: uuid
+                          email:
+                            type: string
+                            format: email
+                          username:
+                            type: string
+                          role:
+                            type: string
+
+  # --- User Management Endpoints ---
+  /users/me:
+    get:
+      tags:
+        - Users
+      summary: Get current user profile
+      description: Get current user profile
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Profile retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/User'
+
+    /users/me:
+    patch:
+      tags:
+        - Users
+      summary: Update current user profile
+      description: Update current user profile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                avatar_url:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+    /users/me/password:
+    post:
+      tags:
+        - Users
+      summary: Change password
+      description: Change user password
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - old_password
+                - new_password
+              properties:
+                old_password:
+                  type: string
+                  minLength: 8
+                new_password:
+                  type: string
+                  minLength: 8
+      responses:
+        '200':
+          description: Password changed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Invalid old password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /users/me/email:
+    post:
+      tags:
+        - Users
+      summary: Initiate email change
+      description: Initiate email change (requires verification)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - new_email
+                - password
+              properties:
+                new_email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+      responses:
+        '202':
+          description: Verification email sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/me/email/verify:
+    post:
+      tags:
+        - Users
+      summary: Verify email change
+      description: Verify and complete email change with token
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - token
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Email changed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/me:
+    delete:
+      tags:
+        - Users
+      summary: Delete current user account
+      description: Delete user account (soft delete)
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Account deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/me/blocked:
+    get:
+      tags:
+        - Users
+      summary: Get blocked users list
+      description: Get list of blocked users
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Blocked users retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          blocked_users:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/User'
+
+  /users/{id}/block:
+    post:
+      tags:
+        - Users
+      summary: Block a user
+      description: Block another user
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - reason
+              properties:
+                reason:
+                  type: string
+                  minLength: 3
+                  maxLength: 500
+      responses:
+        '201':
+          description: User blocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/{id}/block:
+    delete:
+      tags:
+        - Users
+      summary: Unblock a user
+      description: Unblock a user
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: User unblocked
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/me/friends:
+    get:
+      tags:
+        - Users
+      summary: Get friends list
+      description: Get list of friends
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Friends retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          friends:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/User'
+
+  /users/{id}/friend:
+    post:
+      tags:
+        - Users
+      summary: Send friend request
+      description: Send friend request to another user
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Friend request sent
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/me/friends/{id}/accept:
+    post:
+      tags:
+        - Users
+      summary: Accept friend request
+      description: Accept a friend request
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Request ID (friend request ID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Friend request accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/me/friends/{id}/reject:
+    delete:
+      tags:
+        - Users
+      summary: Reject friend request
+      description: Reject a friend request
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Request ID (friend request ID)
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Friend request rejected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /users/me/friends/{id}:
+    delete:
+      tags:
+        - Users
+      summary: Remove friend
+      description: Remove friend relationship
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          description: Friend user ID
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Friend removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  # --- Key Management Endpoints ---
+  /keys/upload:
+    post:
+      tags:
+        - Keys
+      summary: Upload E2EE public keys
+      description: Upload identity key, signed pre-key, and one-time pre-keys
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - identity_key
+                - signed_pre_key
+                - one_time_pre_keys
+              properties:
+                identity_key:
+                  type: string
+                  description: Base64 encoded Ed25519 Public Key
+                signed_pre_key:
+                  type: object
+                  required:
+                    - key_id
+                    - public_key
+                    - signature
+                  properties:
+                    key_id:
+                      type: integer
+                    public_key:
+                      type: string
+                    signature:
+                      type: string
+                one_time_pre_keys:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - key_id
+                      - public_key
+                    properties:
+                      key_id:
+                        type: integer
+                      public_key:
+                        type: string
+                  minItems: 20
+                  maxItems: 100
+      responses:
+        '201':
+          description: Keys uploaded successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          one_time_keys:
+                            type: integer
+
+  /keys/rotate:
+    post:
+      tags:
+        - Keys
+      summary: Rotate signed pre-key
+      description: Rotate signed pre-key (recommended every 7 days)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - new_signed_pre_key
+              properties:
+                new_signed_pre_key:
+                  type: object
+                  required:
+                    - key_id
+                    - public_key
+                    - signature
+                  properties:
+                    key_id:
+                      type: integer
+                    public_key:
+                      type: string
+                    signature:
+                      type: string
+                new_one_time_keys:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - key_id
+                      - public_key
+                    properties:
+                      key_id:
+                        type: integer
+                        public_key:
+                          type: string
+      responses:
+        '200':
+          description: Keys rotated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  # --- Message Endpoints ---
+  /messages:
+    post:
+      tags:
+        - Messages
+      summary: Send a message
+      description: Send a new message to a conversation
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '201':
+          description: Message sent
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Message'
+
+    /messages:
+    get:
+      tags:
+        - Messages
+      summary: Get conversation messages
+      description: Retrieve conversation messages with pagination
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: conversation_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - in: query
+          name: page_state
+          schema:
+            type: string
+            description: Base64 encoded page state for pagination
+      responses:
+        '200':
+          description: Messages retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          messages:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Message'
+                          next_page_state:
+                            type: string
+                            nullable: true
+                          has_more:
+                            type: boolean
+
+  # --- Conversation Endpoints ---
+  /conversations:
+    get:
+      tags:
+        - Conversations
+      summary: Get user's conversations
+      description: Retrieve paginated list of conversations
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Conversations retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Conversation'
+
+  /conversations:
+    post:
+      tags:
+        - Conversations
+      summary: Create a new conversation
+      description: Create a new conversation
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Conversation'
+
+  /conversations/{id}:
+    get:
+      tags:
+        - Conversations
+      summary: Get conversation details
+      description: Get conversation details by ID
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Conversation retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Conversation'
+
+  /conversations/{id}/settings:
+    put:
+      tags:
+        - Conversations
+      summary: Update conversation settings
+      description: Update conversation E2EE settings
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - is_e2ee_enabled
+              properties:
+                is_e2ee_enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Settings updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /conversations/{id}/participants:
+    get:
+      tags:
+        - Conversations
+      summary: Get conversation participants
+      description: Get list of conversation participants
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Participants retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          participants:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/ConversationParticipantDetail'
+
+    /conversations/{id}/participants:
+    post:
+      tags:
+        - Conversations
+      summary: Add participants to conversation
+      description: Add participants to a conversation
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_ids
+              properties:
+                user_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  minItems: 1
+      responses:
+        '200':
+          description: Participants added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /conversations/{id}/participants/{userId}:
+    delete:
+      tags:
+        - Conversations
+      summary: Remove participant from conversation
+      description: Remove participant from conversation
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Participant removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  # --- Call Endpoints ---
+  /calls/initiate:
+    post:
+      tags:
+        - Calls
+      summary: Initiate a new call
+      description: Initiate a new video/audio call
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitiateCallRequest'
+      responses:
+        '201':
+          description: Call initiated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Call'
+
+  /calls/{id}:
+    get:
+      tags:
+        - Calls
+      summary: Get call status
+      description: Get call status by ID
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Call status retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Call'
+
+  /calls/{id}/end:
+    post:
+      tags:
+        - Calls
+      summary: End a call
+      description: End an active call
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Call ended
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                          call_id:
+                            type: string
+                            format: uuid
+                          ended_at:
+                            type: string
+                            format: date-time
+                          duration:
+                            type: integer
+                            description: Duration in seconds
+
+  /calls/{id}/join:
+    post:
+      tags:
+        - Calls
+      summary: Join an ongoing call
+      description: Join an active call
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Joined call
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          message:
+                            type: string
+                          call_id:
+                            type: string
+                            format: uuid
+                          joined_at:
+                            type: string
+                            format: date-time
+
+  # --- Storage Endpoints ---
+  /storage/upload-url:
+    post:
+      tags:
+        - Storage
+      summary: Generate presigned upload URL
+      description: Generate presigned URL for file upload to MinIO/S3
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadURLRequest'
+      responses:
+        '200':
+          description: Upload URL generated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UploadURLResponse'
+
+  /storage/download-url/{file_id}:
+    get:
+      tags:
+        - Storage
+      summary: Generate presigned download URL
+      description: Generate presigned URL for file download from MinIO/S3
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: file_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Download URL generated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          download_url:
+                            type: string
+                            format: uri
+                          file_id:
+                            type: string
+                            format: uuid
+                          file_name:
+                            type: string
+                          file_size:
+                            type: integer
+                            format: int64
+                          content_type:
+                            type: string
+                          expires_at:
+                            type: string
+                            format: date-time
+
+  /storage/files/{file_id}:
+    delete:
+      tags:
+        - Storage
+      summary: Delete a file
+      description: Delete a file
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: file_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: File deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /storage/upload-complete:
+    post:
+      tags:
+        - Storage
+      summary: Mark file upload as complete
+      description: Mark file upload as completed
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - file_id
+              properties:
+                file_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Upload completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /storage/quota:
+    get:
+      tags:
+        - Storage
+      summary: Get user storage quota
+      description: Get user storage quota information
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Quota retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StorageQuota'
+
+  # --- Presence Endpoints ---
+  /presence:
+    post:
+      tags:
+        - Presence
+      summary: Update user presence
+      description: Update user online/offline status
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePresenceRequest'
+      responses:
+        '200':
+          description: Presence updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'

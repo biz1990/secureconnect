@@ -1,0 +1,347 @@
+# Ansible Deployment Playbook
+
+**Project:** SecureConnect SaaS Platform  
+**Version:** 1.0  
+**Status:** Draft  
+**Author:** System Architect
+
+## 1. Tổng quan
+
+Playbook này tự động hóa quy trình:
+1.  **Cài đặt môi trường:** Cài Docker, Git trên tất cả servers.
+2.  **Triển khai DB & Storage:** Khởi động CockroachDB, Cassandra, Redis, MinIO, Coturn trên `storage-01`.
+3.  **Triển khai Backend:** Clone code, build image (hoặc run), và khởi động Services trên `app-01`, `app-02`.
+4.  **Cấu hình Load Balancer:** Cài Nginx, generate config, và start Nginx trên `lb-01`.
+5.  **Firewall:** Cấu hình UFW mở các port cần thiết.
+
+---
+
+## 2. Cấu trúc Thư mục Ansible
+
+```bash
+secureconnect-ansible/
+├── ansible.cfg              # File cấu hình Ansible
+├── inventory.ini             # Danh sách Server (IP, User, Group)
+├── playbooks/
+│   ├── site.yml            # Playbook chính (nội dung bên dưới)
+│   └── roles/              # (Tùy chọn) Chia nhỏ role (docker, nginx...)
+└── templates/
+    ├── nginx.conf.j2      # Template config Nginx (Jinja2)
+    └── env.j2              # Template file .env cho App Services
+```
+
+---
+
+## 3. File Inventory (Danh sách Server)
+
+File này định nghĩa IP của 5 Server. Hãy tạo file `inventory.ini`:
+
+```ini
+# --- Load Balancer ---
+[lb]
+lb-01 ansible_host=192.168.1.10 ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+# --- Application Servers ---
+[apps]
+app-01 ansible_host=192.168.1.11 ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_rsa
+app-02 ansible_host=192.168.1.12 ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+# --- Database & Storage Server ---
+[storage]
+storage-01 ansible_host=192.168.1.13 ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+# --- Grouping All ---
+[all:children]
+lb
+apps
+storage
+
+# --- Grouping Variables ---
+[db_servers:children]
+storage
+```
+
+---
+
+## 4. Playbook Chính (site.yml)
+
+Nội dung file `playbooks/site.yml`:
+
+```yaml
+---
+- name: SecureConnect Deployment
+  hosts: all
+  become: yes # Chạy với quyền sudo
+  vars:
+    # Cấu hình Git
+    git_repo: "https://github.com/yourusername/secureconnect.git"
+    git_branch: "main"
+    dest_dir: "/opt/secureconnect"
+    
+    # Cấu hình Docker Images (Nếu build sẵn)
+    # image_registry: "your-docker-registry"
+    # image_tag: "latest"
+
+  tasks:
+    # --- TASK 1: Cài đặt môi trường chung (All Servers) ---
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      
+    - name: Install prerequisites (Docker, Git, Python pip)
+      apt:
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - git
+          - python3-pip
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ lsb_distribution }} stable"
+        state: present
+        filename: /etc/apt/sources.list.d/docker.list
+        update_cache: yes
+
+    - name: Install Docker Engine
+      apt:
+        name: docker-ce
+        state: present
+        update_cache: yes
+
+    - name: Install Docker Compose
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-Linux-x86_64"
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+    - name: Create project directory
+      file:
+        path: "{{ dest_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Clone Git Repository
+      git:
+        repo: "{{ git_repo }}"
+        dest: "{{ dest_dir }}"
+        version: "{{ git_branch }}"
+        force: yes
+
+# --- SEPARATE PLAYS FOR EACH SERVER ROLE ---
+
+- name: Setup Database & Storage Server
+  hosts: storage
+  become: yes
+  tasks:
+    - name: Start Docker Compose for Databases
+      docker_compose:
+        project_src: "{{ dest_dir }}"
+        state: present
+        # Run docker-compose -d up
+        # Giả định file docker-compose.yml nằm ở root project
+
+    - name: Wait for CockroachDB (Port 26257)
+      wait_for:
+        host: "{{ ansible_host }}" # IP local của server
+        port: 26257
+        timeout: 300
+
+    - name: Wait for Cassandra (Port 9042)
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 9042
+        timeout: 300
+
+    - name: Wait for Redis (Port 6379)
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 6379
+        timeout: 60
+
+    - name: Wait for MinIO Console (Port 9001)
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 9001
+        timeout: 60
+
+- name: Setup Application Servers
+  hosts: apps
+  become: yes
+  tasks:
+    - name: Generate .env file for Go Services
+      template:
+        src: templates/env.j2
+        dest: "{{ dest_dir }}/.env"
+      vars:
+        db_host: "{{ hostvars['storage-01']['ansible_host'] }}"
+        redis_host: "{{ hostvars['storage-01']['ansible_host'] }}"
+
+    - name: Start Backend Services (App/Chat/Video)
+      docker_compose:
+        project_src: "{{ dest_dir }}"
+        state: present
+        async: 45 # Chạy nền, tối đa 45s để build image nếu cần
+        poll: 0 # Không đợi xong
+
+    - name: Wait for App Services to be healthy (Port 8080)
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: 8080
+        timeout: 300
+
+- name: Setup Load Balancer
+  hosts: lb
+  become: yes
+  tasks:
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Generate Nginx Config from Template
+      template:
+        src: templates/nginx.conf.j2
+        dest: /etc/nginx/sites-available/secureconnect
+        backup: yes
+      notify: Restart Nginx
+
+    - name: Enable Site
+      file:
+        src: /etc/nginx/sites-available/secureconnect
+        dest: /etc/nginx/sites-enabled/secureconnect
+        state: link
+      notify: Restart Nginx
+
+    - name: Allow HTTP/HTTPS on Firewall
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - 80
+        - 443
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+```
+
+---
+
+## 5. Template File: Nginx Config
+
+File này dùng để tự động tạo file config Nginx dựa trên danh sách IP của App Servers.
+
+**File: `templates/nginx.conf.j2`**
+
+```jinja2
+upstream backend_servers {
+    least_conn; # Chiến lược load balancing: gửi về server có ít kết nối nhất
+    {% for host in groups['apps'] %}
+        server {{ host.ansible_host }}:8080 max_fails=3 fail_timeout=30s;
+    {% endfor %}
+}
+
+server {
+    listen 80;
+    server_name api.secureconnect.com;
+
+    location / {
+        proxy_pass http://backend_servers;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+---
+
+## 6. Template File: Environment (.env)
+
+File này dùng để tạo file `.env` cho Go Services trên App Servers, chứa IP của Database Server.
+
+**File: `templates/env.j2`**
+
+```jinja2
+ENV=production
+
+# Database Configuration (Trỏ về Storage Server)
+DB_HOST={{ db_host }}
+DB_PORT=26257
+DB_USER=root
+DB_NAME=secureconnect_poc
+DB_SSLMODE=disable
+
+# Cache Configuration (Trỏ về Storage Server)
+REDIS_HOST={{ redis_host }}
+REDIS_PORT=6379
+
+# MinIO / Object Storage
+MINIO_ENDPOINT=http://{{ hostvars['storage-01']['ansible_host'] }}:9000
+```
+
+---
+
+## 7. Hướng dẫn Chạy (How to Run)
+
+### 1. Cài đặt Ansible
+Trên máy chủ của bạn (Local PC hoặc một Jump Server):
+```bash
+pip install ansible
+```
+
+### 2. Kiểm tra kết nối
+Kiểm tra xem Ansible có ssh được vào các server trong file `inventory.ini` hay không:
+```bash
+ansible -i inventory.ini all -m ping
+```
+*Kết quả mong đợi:* `storage-01 | SUCCESS`, `app-01 | SUCCESS`, ...
+
+### 3. Chạy Playbook (Thực thi Deploy)
+```bash
+# Chạy toàn bộ playbook cho tất cả servers
+ansible-playbook -i inventory.ini playbooks/site.yml
+```
+
+---
+
+## 8. Mở rộng (Scaling Up)
+
+Nếu bạn muốn thêm một App Server mới (ví dụ: `app-03`):
+
+1.  Thêm IP vào file `inventory.ini` vào nhóm `[apps]`.
+2.  Chạy lại Playbook. Nginx sẽ tự động detect `app-03` và thêm vào config Load Balancing nhờ Jinja2 template.
+
+---
+
+## 9. Lưu ý quan trọng
+
+*   **SSH Key:** Để Ansible tự động SSH mà không hỏi password, bạn cần cấu hình SSH Key-based authentication và cung cấp đường dẫn tới key trong `inventory.ini` (`ansible_ssh_private_key_file=~/.ssh/id_rsa`).
+*   **Docker Compose Path:** Playbook giả định file `docker-compose.yml` nằm ở thư mục gốc của dự án trên Git (`/opt/secureconnect`). Nếu bạn đặt ở chỗ khác, hãy sửa biến `project_src`.
+*   **Asynchronous Task:** Trong tác vụ "Start Backend Services", tôi dùng `async: 45`. Điều này rất quan trọng vì khi Docker lần đầu tiên pull image hoặc build code (không dùng image build sẵn), nó có thể mất nhiều phút. `async` giúp Ansible không bị treo (hung) và tiếp tục các task khác (ví dụ: configure DB).
+
+---
+
+*Liên kết đến tài liệu tiếp theo:* `deployment/monitoring-setup.md`

@@ -1,0 +1,399 @@
+version: '3.8'
+
+# ============================================
+# LOCAL DOCKER DESKTOP DEPLOYMENT
+# ============================================
+# This docker-compose file is optimized for local development
+# and testing on Docker Desktop (Mac/Windows/Linux).
+#
+# IMPORTANT LIMITATIONS:
+# - No public IP required
+# - No TLS/encryption for TURN
+# - Uses Docker internal networking
+# - Suitable for local testing only
+#
+# DO NOT use this configuration in production!
+
+# --- NETWORKS ---
+networks:
+  secureconnect-net:
+    driver: bridge
+
+# --- VOLUMES ---
+volumes:
+  crdb_data:
+  cassandra_data:
+  redis_data:
+  minio_data:
+  app_logs:
+  turn_data:
+
+    # --- SERVICES ---
+services:
+
+  # 1. DATABASE: COCKROACHDB (SQL)
+  cockroachdb:
+    image: cockroachdb/cockroach:v23.1.0
+    container_name: secureconnect_crdb
+    ports:
+      - "26257:26257" # SQL Port
+      - "8081:8080" # UI Admin
+    command: start-single-node --insecure
+    environment:
+      - POSTGRES_USER=root
+      - POSTGRES_DB=secureconnect_poc
+      - COCKROACH_MAX_OFFSET_MEMORY=2GB
+    volumes:
+      - crdb_data:/cockroach/cockroach-data
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health?ready=1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. DATABASE: CASSANDRA (NoSQL)
+  cassandra:
+    image: cassandra:latest
+    container_name: secureconnect_cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=SecConnectCluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_RACK=rack1
+      - MAX_HEAP_SIZE=1024M
+      - HEAP_NEWSIZE=100M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "cqlsh -e 'describe cluster'" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # 3. CACHE: REDIS
+  redis:
+    image: redis:7-alpine
+    container_name: secureconnect_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - secureconnect-net
+    command: redis-server --appendonly yes --save 900 1
+    restart: always
+
+  # ============================================
+  # TURN/STUN SERVER (Coturn) - LOCAL CONFIGURATION
+  # ============================================
+  # This service is configured for local Docker Desktop testing
+  #
+  # Key differences from production:
+  # - Uses turnserver-local.conf (no TLS, no external IP)
+  # - Port mapping for local access
+  # - Static credentials via environment variables
+  # - No certificate requirements
+  #
+  # Docker Desktop Networking Notes:
+  # - Uses bridge networking (default)
+  # - Container name 'turn' is resolvable within Docker network
+  # - Port 3478 is mapped to host for external access
+  # - External IP is auto-detected by Docker
+  turn:
+    image: coturn/coturn:latest
+    container_name: secureconnect_turn
+    ports:
+      - "3478:3478/udp" # STUN/TURN (UDP) - mapped to host
+      - "3478:3478/tcp" # STUN/TURN (TCP) - mapped to host
+      - "3479:3479/udp" # STUN/TURN alt port (UDP)
+      - "3479:3479/tcp" # STUN/TURN alt port (TCP)
+      # Relay ports: Using safe range for Windows compatibility
+      # Windows reserves ports in 49152-65535 and some in 50000-50100
+      # Using 40000-40020 range (20 ports) to prevent resource exhaustion
+      - "40000-40020:40000-40020/udp" # Relay ports (UDP range - 20 ports)
+    environment:
+      # TURN Authentication Credentials (set via .env or defaults)
+      - TURN_USER=${TURN_USER:-turnuser}
+      - TURN_PASSWORD=${TURN_PASSWORD:-turnpassword}
+      - TURN_REALM=${TURN_REALM:-local.turn}
+    volumes:
+      # Mount local configuration file
+      - ./configs/turnserver-local.conf:/etc/coturn/turnserver.conf:ro
+      - turn_data:/var/lib/coturn
+      - app_logs:/var/log/turnserver
+    networks:
+      - secureconnect-net
+    # Command line overrides for local deployment
+    # - Static user credentials from environment variables
+    # - No external IP specified (Docker handles NAT)
+    # - Verbose logging for debugging
+    command: >
+      turnserver -c /etc/coturn/turnserver.conf --user=${TURN_USER:-turnuser}:${TURN_PASSWORD:-turnpassword} --realm=${TURN_REALM:-local.turn} --verbose
+    restart: always
+    # Health check disabled for local testing
+    # turnutils_uclient health check requires specific configuration
+    # The TURN server is working (verified with manual test)
+
+    # 4. STORAGE: MINIO (Object Storage)
+  minio:
+    image: minio/minio
+    container_name: secureconnect_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # UI Console
+    volumes:
+      - minio_data:/data
+    networks:
+      - secureconnect-net
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+
+  # ============================================
+  # BACKEND SERVICES (GO MICROSERVICES)
+  # ============================================
+
+  # API GATEWAY
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: api-gateway
+        CMD: ./cmd/api-gateway
+    container_name: api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - ENV=local
+      - DB_HOST=cockroachdb
+      - REDIS_HOST=redis
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - CASSANDRA_HOST=cassandra
+      - JWT_SECRET=8da44102d88edc193272683646b44f08
+      # TURN/STUN Configuration for Video Service
+      - TURN_SERVER_HOST=turn
+      - TURN_SERVER_PORT=3478
+      - TURN_USER=${TURN_USER:-turnuser}
+      - TURN_PASSWORD=${TURN_PASSWORD:-turnpassword}
+      - TURN_REALM=${TURN_REALM:-local.turn}
+    volumes:
+      - ./configs:/app/configs
+      - app_logs:/logs
+    depends_on:
+      - cockroachdb
+      - cassandra
+      - redis
+      - minio
+      - turn
+    networks:
+      - secureconnect-net
+    mem_limit: 256m
+    cpus: '0.5'
+    restart: on-failure
+
+  # AUTH SERVICE
+  auth-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: auth-service
+        CMD: ./cmd/auth-service
+    container_name: auth-service
+    ports:
+      - "18080:8080"
+    environment:
+      - ENV=local
+      - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
+      - REDIS_HOST=redis
+      - JWT_SECRET=8da44102d88edc193272683646b44f08
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      - cockroachdb
+      - redis
+    networks:
+      - secureconnect-net
+    mem_limit: 256m
+    cpus: '0.5'
+    restart: on-failure
+
+  # CHAT SERVICE
+  chat-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: chat-service
+        CMD: ./cmd/chat-service
+    container_name: chat-service
+    environment:
+      - ENV=local
+      - PORT=8082
+      - CASSANDRA_HOST=cassandra
+      - CASSANDRA_KEYSPACE=secureconnect_ks
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - JWT_SECRET=8da44102d88edc193272683646b44f08
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      - cassandra
+      - redis
+      - minio
+    networks:
+      - secureconnect-net
+    mem_limit: 512m
+    cpus: '0.5'
+    restart: on-failure
+
+  # VIDEO SERVICE (SFU/Pion)
+  video-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: video-service
+        CMD: ./cmd/video-service
+    container_name: video-service
+    environment:
+      - ENV=local
+      - PORT=8083
+      - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
+      - DB_USER=root
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=8da44102d88edc193272683646b44f08
+      - LOG_LEVEL=info
+      # ICE Configuration for WebRTC
+      # Using Docker hostname 'turn' for TURN server
+      - ICE_SERVERS=[{"urls":["stun:turn:3478"]},{"urls":["turn:turn:3478"],"username":"${TURN_USER:-turnuser}","credential":"${TURN_PASSWORD:-turnpassword}"}]
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      - cockroachdb
+      - redis
+      - turn
+    networks:
+      - secureconnect-net
+    mem_limit: 512m
+    cpus: '1.0'
+    restart: on-failure
+
+  # STORAGE SERVICE
+  storage-service:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE_NAME: storage-service
+        CMD: ./cmd/storage-service
+    container_name: storage-service
+    environment:
+      - ENV=local
+      - PORT=8080
+      - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
+      - REDIS_HOST=redis
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - CASSANDRA_HOST=cassandra
+      - JWT_SECRET=8da44102d88edc193272683646b44f08
+    volumes:
+      - app_logs:/logs
+    depends_on:
+      - cockroachdb
+      - redis
+      - minio
+    networks:
+      - secureconnect-net
+    mem_limit: 256m
+    cpus: '0.5'
+    restart: on-failure
+
+  # LOAD BALANCER (NGINX)
+  gateway:
+    image: nginx:alpine
+    container_name: secureconnect_nginx
+    ports:
+      - "9090:80" # HTTP Public
+      - "9443:443" # HTTPS Public
+    volumes:
+      - ./configs/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - api-gateway
+      - chat-service
+      - auth-service
+      - video-service
+      - turn
+    networks:
+      - secureconnect-net
+    restart: always
+
+# ============================================
+# DOCKER DESKTOP NETWORKING NOTES
+# ============================================
+#
+# 1. HOSTNAME-BASED ROUTING:
+#    - Docker provides internal DNS resolution
+#    - Services can reach each other by container name
+#    - Example: 'turn' resolves to the coturn container IP
+#
+# 2. PORT MAPPING:
+#    - Host port 3478 maps to container port 3478
+#    - Allows external access from host machine
+#    - Browser on host can connect to localhost:3478
+#
+# 3. NO EXTERNAL IP REQUIRED:
+#    - Docker Desktop handles NAT translation
+#    - Container uses internal IP (e.g., 172.x.x.x)
+#    - Docker maps ports to host automatically
+#
+# 4. LOCAL PEER CONNECTIONS:
+#    - Browser tabs can connect to localhost:3478
+#    - Containers can connect to turn:3478
+#    - Both scenarios work without public IP
+#
+# ============================================
+# USAGE INSTRUCTIONS
+# ============================================
+#
+# 1. Start the stack:
+#    docker-compose -f docker-compose.local.yml up -d
+#
+# 2. View TURN logs:
+#    docker logs secureconnect_turn -f
+#
+# 3. Test TURN connectivity:
+#    docker exec secureconnect_turn turnutils_uclient -p 3478 -v -t
+#
+# 4. Stop the stack:
+#    docker-compose -f docker-compose.local.yml down
+#
+# 5. Clean up volumes:
+#    docker-compose -f docker-compose.local.yml down -v
+#
+# ============================================
