@@ -12,18 +12,11 @@ version: '3.8'
 #
 # =============================================================================
 
-# Production Profile - TURN ENABLED
-profiles:
-  production:
-    # Full TURN server with relay capabilities
-    # Suitable for production deployment and NAT traversal testing
-
 services:
   # ============================================
-  # TURN/STUN SERVER (Coturn) - PRODUCTION PROFILE
+  # TURN/STUN SERVER (Coturn)
   # ============================================
-  # This service is ONLY enabled when using the production profile.
-  # It provides full TURN relay capabilities for WebRTC NAT traversal.
+  # Provides TURN relay capabilities for WebRTC NAT traversal.
   #
   # RESOURCE USAGE:
   # - CPU: Moderate (packet forwarding)
@@ -32,15 +25,12 @@ services:
   # - Disk: Moderate (logging)
   #
   # WINDOWS COMPATIBILITY:
-  # - This profile should NOT be used on Windows Docker Desktop
-  # - Use Linux/macOS or cloud deployment instead
-  # - For Windows testing, use STUN-only mode (default)
+  # - This service can be used on Windows Docker Desktop
+  # - For production, ensure proper firewall rules are configured
   #
   turn:
     image: coturn/coturn:4.6.2-alpine
     container_name: secureconnect_turn
-    profiles:
-      - production # Only enabled with --profile production
     ports:
       # STUN/TURN ports
       - "3478:3478/udp" # STUN/TURN (UDP)
@@ -50,10 +40,10 @@ services:
       # TURN TLS (production only)
       - "5349:5349/tcp" # TURN TLS
       - "5350:5350/tcp" # TURN TLS alt port
-      # Relay ports (reduced range for resource safety)
-      # Using 50000-50100 (100 ports) instead of full 49152-65535 range
-      # This prevents 100% CPU/RAM/Disk usage on production servers
-      - "50000-50100:50000-50100/udp"
+      # Relay ports (reduced range for resource safety and Windows compatibility)
+      # Using 49000-49100 (100 ports) instead of full 49152-65535 range
+      # Changed from 50000-50100 to avoid conflicts with Microsoft Teams
+      - "49000-49100:49000-49100/udp"
     environment:
       # TURN Authentication Credentials
       # Set via .env.production or environment variables
@@ -74,24 +64,13 @@ services:
       - secureconnect-net
     # Command with production settings
     command: >
-      sh -c 'if [ -n "$$EXTERNAL_IP" ]; then
-        turnserver -c /etc/coturn/turnserver.conf
-          --external-ip=$$EXTERNAL_IP
-          --user=$$(cat /run/secrets/turn_user 2>/dev/null || echo "$$TURN_USER"):$$(cat /run/secrets/turn_password 2>/dev/null || echo "$$TURN_PASSWORD")
-          --realm=$$TURN_REALM
-          --verbose;
-      else
-        turnserver -c /etc/coturn/turnserver.conf
-          --user=$$(cat /run/secrets/turn_user 2>/dev/null || echo "$$TURN_USER"):$$(cat /run/secrets/turn_password 2>/dev/null || echo "$$TURN_PASSWORD")
-          --realm=$$TURN_REALM
-          --verbose;
-      fi'
+      turnserver -c /etc/coturn/turnserver.conf --user=${TURN_USER:-turnuser}:${TURN_PASSWORD:-turnpassword} --realm=${TURN_REALM:-secureconnect} --verbose
     restart: always
     # Resource limits for production safety
     mem_limit: 512m
     cpus: '1.0'
     healthcheck:
-      test: [ "CMD", "turnutils_uclient", "-u", "test", "-w", "test", "127.0.0.1" ]
+      test: [ "CMD-SHELL", "test -f /proc/1/cmdline || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 3

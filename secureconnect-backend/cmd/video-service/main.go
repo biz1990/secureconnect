@@ -99,6 +99,9 @@ func main() {
 		log.Println("✅ Connected to CockroachDB")
 	}
 
+	// Initialize Redis metrics before connecting to Redis
+	intDatabase.InitRedisMetrics()
+
 	// 3. Initialize Redis with degraded mode support
 	redisConfig := &intDatabase.RedisConfig{
 		Host:     env.GetString("REDIS_HOST", "localhost"),
@@ -210,6 +213,7 @@ func main() {
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
 	router.Use(prometheusMiddleware.Handler())
+	router.Use(middleware.NewTimeoutMiddleware(nil).Middleware())
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {

@@ -32,6 +32,12 @@ type SendMessageRequest struct {
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
 
+// TypingIndicatorRequest represents typing indicator request
+type TypingIndicatorRequest struct {
+	ConversationID string `json:"conversation_id" binding:"required,uuid"`
+	IsTyping       bool   `json:"is_typing" binding:"required"`
+}
+
 // GetMessagesQuery represents query parameters for listing messages
 type GetMessagesQuery struct {
 	ConversationID string `form:"conversation_id" binding:"required,uuid"`
@@ -178,5 +184,45 @@ func (h *Handler) UpdatePresence(c *gin.Context) {
 
 	response.Success(c, http.StatusOK, gin.H{
 		"message": "Presence updated",
+	})
+}
+
+// HandleTypingIndicator handles typing indicator updates
+// POST /v1/typing
+func (h *Handler) HandleTypingIndicator(c *gin.Context) {
+	var req TypingIndicatorRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, err.Error())
+		return
+	}
+
+	// Get user ID from context (set by auth middleware)
+	userIDVal, exists := c.Get("user_id")
+	if !exists {
+		response.Unauthorized(c, "Not authenticated")
+		return
+	}
+
+	userID, ok := userIDVal.(uuid.UUID)
+	if !ok {
+		response.InternalError(c, "Invalid user ID")
+		return
+	}
+
+	// Parse conversation ID
+	conversationID, err := uuid.Parse(req.ConversationID)
+	if err != nil {
+		response.ValidationError(c, "Invalid conversation ID")
+		return
+	}
+
+	// Call service to broadcast typing indicator
+	if err := h.chatService.BroadcastTypingIndicator(c.Request.Context(), conversationID, userID, req.IsTyping); err != nil {
+		response.InternalError(c, "Failed to broadcast typing indicator")
+		return
+	}
+
+	response.Success(c, http.StatusOK, gin.H{
+		"message": "Typing indicator sent",
 	})
 }

@@ -82,6 +82,9 @@ func main() {
 
 	logger.Info("Connected to CockroachDB")
 
+	// Initialize Redis metrics before connecting to Redis
+	database.InitRedisMetrics()
+
 	// 3. Connect to Redis with degraded mode support
 	redisDB, err := database.NewRedisDB(&database.RedisConfig{
 		Host:     cfg.Redis.Host,
@@ -182,6 +185,7 @@ func main() {
 	router.Use(middleware.SecurityHeaders())
 	router.Use(middleware.CORSMiddleware())
 	router.Use(prometheusMiddleware.Handler())
+	router.Use(middleware.NewTimeoutMiddleware(nil).Middleware())
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {

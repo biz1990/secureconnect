@@ -67,11 +67,14 @@ services:
     ports:
       - "26257:26257" # SQL Port
       - "8085:8080" # UI Admin (changed from 8081 to avoid conflict with auth-service)
-    # Security: Using --insecure mode for development (no TLS certificates required)
-    # For production, generate certs with: ./scripts/generate-certs.sh
+    mem_limit: 2g
+    mem_reservation: 1g
+    # Security: Using --insecure mode for Docker Desktop (no TLS certificates required)
+    # PRODUCTION NOTE: For true production deployment, generate certs with: ./scripts/generate-certs.sh
     # and change command to: start-single-node --certs-dir=/cockroach/certs
-    command: >
-      bash -c 'COCKROACH_HOST=127.0.0.1 exec cockroach start-single-node --insecure --store=/cockroach/cockroach-data'
+    # Docker Desktop limitation: TLS certificate mounting requires complex configuration
+    # Safe workaround: Use --insecure with network isolation and firewall rules
+    command: start-single-node --insecure --store=/cockroach/cockroach-data
     environment:
       - POSTGRES_USER=root
       - POSTGRES_DB=secureconnect_poc
@@ -96,6 +99,8 @@ services:
     container_name: secureconnect_cassandra
     ports:
       - "9042:9042"
+    mem_limit: 2g
+    mem_reservation: 1g
     secrets:
       - cassandra_user
       - cassandra_password
@@ -188,6 +193,7 @@ services:
       interval: 20s
       timeout: 5s
       retries: 3
+      start_period: 30s
 
   # --------------------------------------------------------------------------
   # API GATEWAY
@@ -210,18 +216,21 @@ services:
       - minio_secret_key
       - smtp_username
       - smtp_password
+      - redis_password
     environment:
       - ENV=production
       - PORT=8080
       - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
       - REDIS_HOST=redis
-      - MINIO_ENDPOINT=http://minio:9000
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
       - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
       - CASSANDRA_HOST=cassandra
       - CASSANDRA_USER_FILE=/run/secrets/cassandra_user
       - CASSANDRA_PASSWORD_FILE=/run/secrets/cassandra_password
-      - JWT_SECRET=$$(cat /run/secrets/jwt_secret)
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
       - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
       - SMTP_PORT=${SMTP_PORT:-587}
@@ -273,13 +282,15 @@ services:
       - db_password
       - smtp_username
       - smtp_password
+      - redis_password
     environment:
       - ENV=production
       - PORT=8080
       - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
       - REDIS_HOST=redis
-      - JWT_SECRET=$$(cat /run/secrets/jwt_secret)
-      - DB_PASSWORD_FILE=/run/secrets/db_password
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
       - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
       - SMTP_PORT=${SMTP_PORT:-587}
@@ -326,7 +337,10 @@ services:
       - cassandra_user
       - cassandra_password
       - minio_access_key
+      - minio_access_key
       - minio_secret_key
+      - db_password
+      - redis_password
     environment:
       - ENV=production
       - PORT=8082
@@ -334,10 +348,13 @@ services:
       - CASSANDRA_USER_FILE=/run/secrets/cassandra_user
       - CASSANDRA_PASSWORD_FILE=/run/secrets/cassandra_password
       - REDIS_HOST=redis
-      - MINIO_ENDPOINT=http://minio:9000
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
       - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
-      - JWT_SECRET=$$(cat /run/secrets/jwt_secret)
+      - COCKROACH_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
       - LOG_OUTPUT=file
       - LOG_FILE_PATH=/logs/chat-service.log
@@ -379,10 +396,12 @@ services:
       - jwt_secret
       - firebase_project_id
       - firebase_credentials
+      - redis_password
     environment:
       - ENV=production
       - PORT=8083
       - REDIS_HOST=redis
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
       - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - FIREBASE_PROJECT_ID_FILE=/run/secrets/firebase_project_id
       - FIREBASE_CREDENTIALS_PATH=/run/secrets/firebase_credentials
@@ -426,22 +445,32 @@ services:
       - cassandra_password
       - minio_access_key
       - minio_secret_key
+      - db_password
+      - redis_password
     environment:
       - ENV=production
       - PORT=8084
-      - MINIO_ENDPOINT=http://minio:9000
+      - DB_HOST=cockroachdb
+      - DB_NAME=secureconnect_poc
+      - REDIS_HOST=redis
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY_FILE=/run/secrets/minio_access_key
       - MINIO_SECRET_KEY_FILE=/run/secrets/minio_secret_key
       - CASSANDRA_HOST=cassandra
       - CASSANDRA_USER_FILE=/run/secrets/cassandra_user
       - CASSANDRA_PASSWORD_FILE=/run/secrets/cassandra_password
-      - JWT_SECRET=$$(cat /run/secrets/jwt_secret)
+      - JWT_SECRET_FILE=/run/secrets/jwt_secret
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-https://secureconnect.com,https://api.secureconnect.com}
       - LOG_OUTPUT=file
       - LOG_FILE_PATH=/logs/storage-service.log
     volumes:
       - app_logs:/logs
     depends_on:
+      cockroachdb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       minio:
         condition: service_healthy
     networks:
@@ -481,7 +510,7 @@ services:
       - secureconnect-net
     restart: always
     healthcheck:
-      test: [ "CMD", "turnutils_uclient", "-u", "test", "-w", "test", "127.0.0.1" ]
+      test: [ "CMD", "sh", "-c", "turnutils_uclient -u $$(cat /run/secrets/turn_user) -w $$(cat /run/secrets/turn_password) 127.0.0.1" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -507,6 +536,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
   # --------------------------------------------------------------------------
   # ALERTMANAGER (Prometheus Alerting)
@@ -529,6 +559,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
   # --------------------------------------------------------------------------
   # BACKUP SCHEDULER (Automated Backups)
@@ -550,6 +581,11 @@ services:
     networks:
       - secureconnect-net
     restart: always
+    healthcheck:
+      test: [ "CMD", "pgrep", "-f", "crond" ]
+      interval: 60s
+      timeout: 10s
+      retries: 3
 
   # --------------------------------------------------------------------------
   # LOAD BALANCER (NGINX)

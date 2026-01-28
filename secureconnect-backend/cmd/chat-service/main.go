@@ -55,6 +55,9 @@ func main() {
 
 	log.Println("✅ Connected to Cassandra")
 
+	// Initialize Redis metrics before connecting to Redis
+	intDatabase.InitRedisMetrics()
+
 	// 3. Connect to Redis with degraded mode support
 	redisConfig := &intDatabase.RedisConfig{
 		Host:     env.GetString("REDIS_HOST", "localhost"),
@@ -143,6 +146,7 @@ func main() {
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
 	router.Use(prometheusMiddleware.Handler())
+	router.Use(middleware.NewTimeoutMiddleware(nil).Middleware())
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {
@@ -169,6 +173,9 @@ func main() {
 
 		// Presence endpoint
 		v1.POST("/presence", chatHdlr.UpdatePresence)
+
+		// Typing indicator endpoint
+		v1.POST("/typing", chatHdlr.HandleTypingIndicator)
 
 		// WebSocket endpoint (real-time chat)
 		v1.GET("/ws/chat", func(c *gin.Context) {

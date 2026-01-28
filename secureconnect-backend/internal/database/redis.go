@@ -41,8 +41,9 @@ var (
 	redisMetricsOnce     sync.Once
 )
 
-// init registers Redis metrics with Prometheus
-func init() {
+// InitRedisMetrics initializes and registers Redis metrics with Prometheus
+// This should be called explicitly in main() before metrics are used
+func InitRedisMetrics() {
 	redisMetricsOnce.Do(func() {
 		redisMetricsInstance = &redisMetrics{
 			degradedMode: prometheus.NewGauge(prometheus.GaugeOpts{
@@ -61,7 +62,7 @@ func init() {
 }
 
 // getRedisMetrics returns the Redis metrics instance
-// This function is called from init() which is automatically executed when the package is imported
+// This function is called after InitRedisMetrics() has been called
 func getRedisMetrics() *redisMetrics {
 	return redisMetricsInstance
 }

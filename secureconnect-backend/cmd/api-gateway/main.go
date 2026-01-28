@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,6 +25,9 @@ func main() {
 	// Initialize logger with service name
 	logger.InitDefault("api-gateway")
 	defer logger.Sync()
+
+	// Initialize Redis metrics before connecting to Redis
+	database.InitRedisMetrics()
 
 	// 1. Connect to Redis (for rate limiting)
 	redisConfig := &database.RedisConfig{
@@ -98,6 +102,7 @@ func main() {
 	router.Use(middleware.CORSMiddleware())
 	router.Use(rateLimiter.Middleware())
 	router.Use(prometheusMiddleware.Handler())
+	router.Use(middleware.NewTimeoutMiddleware(nil).Middleware())
 
 	// Revocation checker
 	revocationChecker := middleware.NewRedisRevocationChecker(redisDB.Client)
@@ -263,8 +268,15 @@ func proxyToService(serviceName string, port int) gin.HandlerFunc {
 			return
 		}
 
-		// Create reverse proxy
+		// Create reverse proxy with timeout
 		proxy := httputil.NewSingleHostReverseProxy(remote)
+		proxy.Transport = &http.Transport{
+			ResponseHeaderTimeout: 30 * time.Second,
+			DialContext: (&net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+		}
 
 		// Modify request
 		proxy.Director = func(req *http.Request) {

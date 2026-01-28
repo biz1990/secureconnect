@@ -14,12 +14,13 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
+	"secureconnect-backend/internal/database"
 	storageHandler "secureconnect-backend/internal/handler/http/storage"
 	"secureconnect-backend/internal/middleware"
 	"secureconnect-backend/internal/repository/cockroach"
 	storageService "secureconnect-backend/internal/service/storage"
 	"secureconnect-backend/pkg/config"
-	"secureconnect-backend/pkg/database"
+	pkgDatabase "secureconnect-backend/pkg/database"
 	"secureconnect-backend/pkg/jwt"
 	"secureconnect-backend/pkg/logger"
 	"secureconnect-backend/pkg/metrics"
@@ -56,7 +57,7 @@ func main() {
 	)
 
 	// 2. Connect to CockroachDB
-	crdb, err := database.NewCockroachDB(ctx, &database.CockroachConfig{
+	crdb, err := pkgDatabase.NewCockroachDB(ctx, &pkgDatabase.CockroachConfig{
 		Host:     cfg.Database.Host,
 		Port:     cfg.Database.Port,
 		User:     cfg.Database.User,
@@ -90,6 +91,9 @@ func main() {
 	}
 
 	log.Println("✅ Connected to MinIO")
+
+	// Initialize Redis metrics before connecting to Redis
+	database.InitRedisMetrics()
 
 	// 4. Initialize Metrics
 	appMetrics := metrics.NewMetrics("storage-service")
@@ -144,6 +148,7 @@ func main() {
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.CORSMiddleware())
 	router.Use(prometheusMiddleware.Handler())
+	router.Use(middleware.NewTimeoutMiddleware(nil).Middleware())
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {

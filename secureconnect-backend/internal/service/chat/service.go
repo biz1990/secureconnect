@@ -309,3 +309,33 @@ func truncateMessage(content string, maxLength int) string {
 	}
 	return strings.TrimSpace(content[:maxLength]) + "..."
 }
+
+// BroadcastTypingIndicator broadcasts typing indicator to conversation participants
+func (s *Service) BroadcastTypingIndicator(ctx context.Context, conversationID, userID uuid.UUID, isTyping bool) error {
+	// Create typing indicator message
+	typingMessage := map[string]interface{}{
+		"type":            "typing_indicator",
+		"conversation_id": conversationID.String(),
+		"user_id":         userID.String(),
+		"is_typing":       isTyping,
+		"timestamp":       time.Now().Unix(),
+	}
+
+	messageJSON, err := json.Marshal(typingMessage)
+	if err != nil {
+		return fmt.Errorf("failed to marshal typing indicator: %w", err)
+	}
+
+	// Publish to Redis Pub/Sub for real-time delivery
+	channel := fmt.Sprintf("chat:%s", conversationID)
+	if err := s.publisher.Publish(ctx, channel, messageJSON); err != nil {
+		// Log error but don't fail the request
+		logger.Warn("Failed to publish typing indicator",
+			zap.String("conversation_id", conversationID.String()),
+			zap.String("user_id", userID.String()),
+			zap.Bool("is_typing", isTyping),
+			zap.Error(err))
+	}
+
+	return nil
+}

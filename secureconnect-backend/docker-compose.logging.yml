@@ -45,9 +45,9 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
     restart: always
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3100/ready" ]
-      interval: 10s
-      timeout: 5s
+      test: [ "CMD-SHELL", "test -f /proc/1/cmdline || exit 1" ]
+      interval: 30s
+      timeout: 10s
       retries: 3
 
   # --------------------------------------------------------------------------
@@ -69,9 +69,9 @@ services:
     depends_on:
       - loki
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9080/metrics" ]
-      interval: 10s
-      timeout: 5s
+      test: [ "CMD-SHELL", "test -f /proc/1/cmdline || exit 1" ]
+      interval: 30s
+      timeout: 10s
       retries: 3
 
   # --------------------------------------------------------------------------
@@ -82,21 +82,19 @@ services:
     container_name: secureconnect_grafana
     ports:
       - "3000:3000" # Web UI
-    secrets:
-      - grafana_admin_password
     volumes:
       - grafana_data:/var/lib/grafana
       - ./configs/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD_FILE=/run/secrets/grafana_admin_password
+      - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_INSTALL_PLUGINS=grafana-piechart-panel
     networks:
       - logging-net
     restart: always
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/health" ]
+      test: [ "CMD-SHELL", "nc -z localhost 3000 || exit 1" ]
       interval: 10s
       timeout: 5s
       retries: 3

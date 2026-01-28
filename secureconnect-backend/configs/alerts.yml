@@ -65,7 +65,7 @@ groups:
     rules:
       # Redis in degraded mode
       - alert: RedisDegradedMode
-        expr: redis_connections < 1
+        expr: redis_degraded_mode == 1
         for: 5m
         labels:
           severity: warning
@@ -77,16 +77,17 @@ groups:
       # High HTTP latency (> 500ms)
       - alert: HighHTTPLatency
         expr: |
-          histogram_quantile(0.95, rate(http_request_duration_seconds_sum[5m], rate(http_requests_total[5m])) > 0.5
+          histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 0.5
         for: 5m
         labels:
           severity: warning
           component: http
 
       # High database query latency (> 500ms)
+      # Using db_query_duration_seconds_bucket if available, otherwise assume summary/histogram exists
       - alert: HighDBLatency
         expr: |
-          histogram_quantile(0.95, rate(db_query_duration_seconds_sum[5m], rate(http_requests_total[5m])) > 0.5
+          histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le)) > 0.5
         for: 5m
         labels:
           severity: warning
@@ -95,7 +96,7 @@ groups:
       # High Redis command latency (> 200ms)
       - alert: HighRedisLatency
         expr: |
-          histogram_quantile(0.95, rate(redis_command_duration_seconds_sum[5m], rate(redis_commands_total[5m])) > 0.2
+          histogram_quantile(0.95, sum(rate(redis_command_duration_seconds_bucket[5m])) by (le)) > 0.2
         for: 5m
         labels:
           severity: warning
@@ -119,3 +120,14 @@ groups:
         labels:
           severity: info
           component: webrtc
+
+  - name: request_timeout
+    interval: 1m
+    rules:
+      # High request timeout rate (> 10 per minute)
+      - alert: HighRequestTimeoutRate
+        expr: rate(request_timeout_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: critical
+          component: http

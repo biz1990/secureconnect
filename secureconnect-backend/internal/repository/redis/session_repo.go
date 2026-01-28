@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"secureconnect-backend/internal/database"
 	"secureconnect-backend/pkg/constants"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,12 +15,65 @@ import (
 
 // SessionRepository handles user session management in Redis
 type SessionRepository struct {
-	client *database.RedisClient
+	client        *database.RedisClient
+	inMemoryCache *InMemorySessionCache
 }
 
-// NewSessionRepository creates a new SessionRepository
+// InMemorySessionCache provides fallback storage when Redis is degraded
+type InMemorySessionCache struct {
+	mu        sync.RWMutex
+	sessions  map[string]*Session
+	userIndex map[uuid.UUID][]string // user_id -> session_ids
+}
+
+// NewInMemorySessionCache creates a new in-memory session cache
+func NewInMemorySessionCache() *InMemorySessionCache {
+	return &InMemorySessionCache{
+		sessions:  make(map[string]*Session),
+		userIndex: make(map[uuid.UUID][]string),
+	}
+}
+
+// Set stores a session in memory
+func (c *InMemorySessionCache) Set(sessionID string, session *Session, userID uuid.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sessions[sessionID] = session
+	c.userIndex[userID] = append(c.userIndex[userID], sessionID)
+}
+
+// Get retrieves a session from memory
+func (c *InMemorySessionCache) Get(sessionID string) (*Session, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	session, exists := c.sessions[sessionID]
+	if !exists {
+		return nil, fmt.Errorf("session not found")
+	}
+	return session, nil
+}
+
+// Delete removes a session from memory
+func (c *InMemorySessionCache) Delete(sessionID string, userID uuid.UUID) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.sessions, sessionID)
+	if sessions, exists := c.userIndex[userID]; exists {
+		for i, sid := range sessions {
+			if sid == sessionID {
+				c.userIndex[userID] = append(sessions[:i], sessions[i+1:]...)
+				break
+			}
+		}
+	}
+}
+
+// NewSessionRepository creates a new SessionRepository with in-memory fallback
 func NewSessionRepository(client *database.RedisClient) *SessionRepository {
-	return &SessionRepository{client: client}
+	return &SessionRepository{
+		client:        client,
+		inMemoryCache: NewInMemorySessionCache(),
+	}
 }
 
 // Session represents a user session
@@ -34,6 +88,12 @@ type Session struct {
 
 // CreateSession stores a new session
 func (r *SessionRepository) CreateSession(ctx context.Context, session *Session, ttl time.Duration) error {
+	// If Redis is degraded, use in-memory fallback
+	if r.client.IsDegraded() {
+		r.inMemoryCache.Set(session.SessionID, session, session.UserID)
+		return nil
+	}
+
 	key := fmt.Sprintf("session:%s", session.SessionID)
 
 	data, err := json.Marshal(session)
@@ -58,6 +118,11 @@ func (r *SessionRepository) CreateSession(ctx context.Context, session *Session,
 
 // GetSession retrieves a session by ID
 func (r *SessionRepository) GetSession(ctx context.Context, sessionID string) (*Session, error) {
+	// If Redis is degraded, use in-memory fallback
+	if r.client.IsDegraded() {
+		return r.inMemoryCache.Get(sessionID)
+	}
+
 	key := fmt.Sprintf("session:%s", sessionID)
 
 	data, err := r.client.SafeGet(ctx, key).Result()
@@ -79,6 +144,12 @@ func (r *SessionRepository) GetSession(ctx context.Context, sessionID string) (*
 
 // DeleteSession removes a session
 func (r *SessionRepository) DeleteSession(ctx context.Context, sessionID string, userID uuid.UUID) error {
+	// If Redis is degraded, use in-memory fallback
+	if r.client.IsDegraded() {
+		r.inMemoryCache.Delete(sessionID, userID)
+		return nil
+	}
+
 	key := fmt.Sprintf("session:%s", sessionID)
 
 	err := r.client.SafeDel(ctx, key).Err()
@@ -154,6 +225,10 @@ type FailedLoginAttempt struct {
 func (r *SessionRepository) GetAccountLock(ctx context.Context, key string) (*AccountLock, error) {
 	data, err := r.client.SafeGet(ctx, key).Result()
 	if err != nil {
+		// Handle Redis key not found gracefully - no lock exists
+		if err == redis.Nil {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("failed to get account lock: %w", err)
 	}
 
@@ -161,19 +236,35 @@ func (r *SessionRepository) GetAccountLock(ctx context.Context, key string) (*Ac
 		return nil, nil
 	}
 
-	var lockedUntil time.Time
-	err = json.Unmarshal([]byte(data), &lockedUntil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse account lock: %w", err)
+	// Try JSON unmarshal first (new format)
+	var accountLock AccountLock
+	err = json.Unmarshal([]byte(data), &accountLock)
+	if err == nil {
+		return &accountLock, nil
 	}
 
-	return &AccountLock{LockedUntil: lockedUntil}, nil
+	// Fallback: Try parsing as Unix timestamp (backward compatibility with stale data)
+	var unixTimestamp int64
+	_, err = fmt.Sscanf(data, "%d", &unixTimestamp)
+	if err == nil {
+		// Successfully parsed as Unix timestamp - convert to time.Time
+		lockedUntil := time.Unix(unixTimestamp, 0)
+		return &AccountLock{LockedUntil: lockedUntil}, nil
+	}
+
+	// Both formats failed - data is corrupted
+	return nil, fmt.Errorf("failed to parse account lock: invalid format (neither JSON nor Unix timestamp)")
 }
 
 // LockAccount locks an account
 func (r *SessionRepository) LockAccount(ctx context.Context, key string, lockedUntil time.Time) error {
-	data := fmt.Sprintf("%d", lockedUntil.Unix())
-	err := r.client.SafeSet(ctx, key, data, constants.AccountLockDuration).Err()
+	// Use JSON format for consistency and proper serialization
+	accountLock := &AccountLock{LockedUntil: lockedUntil}
+	data, err := json.Marshal(accountLock)
+	if err != nil {
+		return fmt.Errorf("failed to marshal account lock: %w", err)
+	}
+	err = r.client.SafeSet(ctx, key, data, constants.AccountLockDuration).Err()
 	if err != nil {
 		return fmt.Errorf("failed to lock account: %w", err)
 	}
